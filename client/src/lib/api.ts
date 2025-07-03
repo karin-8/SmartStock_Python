@@ -9,7 +9,7 @@ export async function getMetrics(plant: string): Promise<DashboardMetrics> {
 }
 
 export async function getForecast(plant: string): Promise<InventoryItemWithForecast[]> {
-  const res = await fetch("http://localhost:8000/api/forecast?plant=${plant}");
+  const res = await fetch(`http://localhost:8000/api/forecast?plant=${plant}`);
   if (!res.ok) {
     throw new Error("Failed to fetch forecast data");
   }
@@ -17,7 +17,7 @@ export async function getForecast(plant: string): Promise<InventoryItemWithForec
 }
 
 export async function getHistorical(): Promise<any[]> {
-  const res = await fetch("http://localhost:8000/api/historical-stock");
+  const res = await fetch(`http://localhost:8000/api/historical-stock?plant=${plant}`);
   if (!res.ok) {
     throw new Error("Failed to fetch historical stock data");
   }
