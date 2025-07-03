@@ -1,0 +1,11 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+<<<<<<< HEAD
+*.tar.gz
+backend/themallfull
+=======
+*.tar.gz
+>>>>>>> b706f0d121b3b10e4a512f0da8a0587ce01b61a7
