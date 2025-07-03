@@ -7,6 +7,59 @@ from datetime import datetime, timedelta
 import asyncpg
 import os
 from dotenv import load_dotenv
+from collections import defaultdict
+
+# Assume: result = [{material, week, openingStock, closingStock, change}, ...]
+
+from collections import defaultdict
+
+def patch_missing_weeks(result, weeks=(-4, -3, -2, -1)):
+    # Build a dict of dicts: mat -> week -> data
+    mat_weeks = defaultdict(dict)
+    all_materials = set()
+    for row in result:
+        mat_weeks[row['material']][row['week']] = row
+        all_materials.add(row['material'])
+
+    # Fill in missing weeks with None or "-"
+    padded = []
+    for mat in sorted(all_materials):
+        for w in weeks:
+            row = mat_weeks[mat].get(w)
+            if row:
+                padded.append(row)
+            else:
+                padded.append({
+                    "material": mat,
+                    "week": w,
+                    "openingStock": None,
+                    "closingStock": None,
+                    "change": None,
+                })
+    return padded
+
+def backfill_opening_stock(result, weeks=[-4, -3, -2, -1]):
+    # Group by material
+    hist = defaultdict(dict)
+    for row in result:
+        hist[row["material"]][row["week"]] = row
+
+    # For each material, work backwards to fill openingStock
+    for material, week_dict in hist.items():
+        # Find first week with nonzero opening (start from latest towards earliest)
+        prev_open = None
+        for week in sorted(weeks, reverse=True):  # W-1, W-2, ...
+            row = week_dict.get(week)
+            if row is None:
+                continue
+            if row.get("openingStock", 0) != 0:  # Already filled
+                prev_open = row["openingStock"]
+            elif prev_open is not None and "change" in row:
+                # Backfill opening
+                row["openingStock"] = prev_open - row["change"]
+                prev_open = row["openingStock"]
+    # Flatten back to list
+    return [row for mat in hist.values() for row in mat.values()]
 
 load_dotenv()
 
@@ -93,106 +146,144 @@ order_list: List[OrderRequest] = []
 
 @app.get("/api/historical-stock")
 async def get_historical_stock(plant: str = Query("15KA")):
+    import datetime as dt
+    from datetime import datetime, timedelta
     conn = await get_db_connection()
     try:
-        import datetime as dt
-        from datetime import datetime
+        # 1. Define anchor and weeks (W-4 .. W-1)
+        anchor_date = datetime(2024, 12, 23)  # <-- Use your actual anchor if needed!
+        week_ranges = []
+        for rel_week in range(-4, 0):  # W-4 to W-1
+            # Each week starts on Monday!
+            start = (anchor_date - timedelta(days=anchor_date.weekday())) + timedelta(weeks=rel_week)
+            end = start + timedelta(days=6)
+            week_ranges.append((rel_week, start.date(), end.date()))
 
-        # ✅ Step 1: Calculate relative week mapping for W-4 to W-1
-        week_map_query = """
-            WITH week_series AS (
-                SELECT generate_series(-4, -1) AS relative_week
-            ),
-            target_weeks AS (
-                SELECT
-                    (DATE '2024-12-23' - (8 - relative_week) * INTERVAL '1 week') AS target_date,
-                    relative_week
-                FROM week_series
-            )
-            SELECT
-                relative_week,
-                EXTRACT(ISOYEAR FROM target_date)::INT AS iso_year,
-                EXTRACT(WEEK FROM target_date)::INT AS iso_week
-            FROM target_weeks
-            ORDER BY relative_week;
-        """
-        week_rows = await conn.fetch(week_map_query)
-        week_map = {row["relative_week"]: (row["iso_year"], row["iso_week"]) for row in week_rows}
+        date_min = min(start for _, start, _ in week_ranges)
+        date_max = max(end for _, _, end in week_ranges)
 
-        # ✅ Step 2: Map each week to date range (start & end date)
-        week_date_ranges = {}
-        for rel_week, (iso_year, iso_week) in week_map.items():
-            week_start = datetime.strptime(f"{iso_year}-W{iso_week - 1}-1", "%G-W%V-%u").date()
-            week_end = week_start + dt.timedelta(days=6)
-            week_date_ranges[rel_week] = (week_start, week_end)
-
-        result = []
-
-        # ✅ Step 3: For each week, fetch stock and movement
-        for rel_week, (week_start, week_end) in week_date_ranges.items():
-            # --- Stock: Get latest daily stock of that week from f_stock_daily_2
-            stock_query = """WITH daily_with_iso AS (
+        # 2. Query ALL relevant data at once (for window functions to work!)
+        stock_query = """
+            WITH raw_data AS (
                 SELECT
                     material,
-                    EXTRACT(ISODOW FROM d_period::date) AS dow,
-                    EXTRACT('isoyear' FROM d_period::date)::INT AS iso_year,
-                    EXTRACT('week' FROM d_period::date)::INT AS iso_week,
+                    plant,
+                    d_period::date AS date,
+                    EXTRACT(isoyear FROM d_period::date) AS iso_year,
+                    EXTRACT(week FROM d_period::date) AS iso_week,
+                    move_qty,
                     daily_stock
-                FROM themall_poc.f_stock_daily_2
-                WHERE plant = $3
+                FROM themall_poc.f_stock_daily_3
+                WHERE plant = $1
+                  AND d_period::date >= $2
+                  AND d_period::date <= $3
             ),
-            latest_day_per_week AS (
+            by_week AS (
                 SELECT
                     material,
+                    plant,
                     iso_year,
                     iso_week,
-                    MAX(dow) AS latest_dow
-                FROM daily_with_iso
-                WHERE iso_year = $1 AND iso_week = $2
-                GROUP BY material, iso_year, iso_week
-            )
-            SELECT
-                d.material,
-                d.daily_stock AS latest_daily_stock
-            FROM daily_with_iso d
-            JOIN latest_day_per_week l
-            ON d.material = l.material
-            AND d.iso_year = l.iso_year
-            AND d.iso_week = l.iso_week
-            AND d.dow = l.latest_dow;
-            """
-
-            iso_year, iso_week = week_map[rel_week]
-            stock_rows = await conn.fetch(stock_query, iso_year, iso_week, plant)
-
-            # --- Movement: Sum move_in and move_out from f_mb51_top50 for this week
-            movement_query = """
+                    MIN(date) AS week_start,
+                    MAX(date) AS week_end
+                FROM raw_data
+                GROUP BY material, plant, iso_year, iso_week
+            ),
+            weekly_change AS (
                 SELECT
                     material,
-                    SUM(CASE WHEN unit_entry_qty > 0 THEN unit_entry_qty ELSE 0 END) AS move_in,
-                    SUM(CASE WHEN unit_entry_qty < 0 THEN ABS(unit_entry_qty) ELSE 0 END) AS move_out
-                FROM themall_poc.f_mb51_top50
-                WHERE plant = $3
-                  AND posting_date >= $1
-                  AND posting_date <= $2
-                GROUP BY material;
-            """
-            move_rows = await conn.fetch(movement_query, str(week_start), str(week_end), plant)
-            move_map = {row["material"].strip(): row for row in move_rows}
+                    plant,
+                    iso_year,
+                    iso_week,
+                    SUM(move_qty) AS change
+                FROM raw_data
+                GROUP BY material, plant, iso_year, iso_week
+            ),
+            closing_stock AS (
+                SELECT
+                    r.material,
+                    r.plant,
+                    r.iso_year,
+                    r.iso_week,
+                    r.daily_stock AS closing_stock
+                FROM raw_data r
+                JOIN by_week b
+                  ON r.material = b.material
+                 AND r.plant = b.plant
+                 AND r.iso_year = b.iso_year
+                 AND r.iso_week = b.iso_week
+                 AND r.date = b.week_end
+            ),
+            merged AS (
+                SELECT
+                    w.material,
+                    w.plant,
+                    w.iso_year,
+                    w.iso_week,
+                    w.change,
+                    c.closing_stock
+                FROM weekly_change w
+                JOIN closing_stock c
+                  ON w.material = c.material
+                 AND w.plant = c.plant
+                 AND w.iso_year = c.iso_year
+                 AND w.iso_week = c.iso_week
+            ),
+            rolling AS (
+                SELECT
+                    *,
+                    LAG(closing_stock) OVER (
+                      PARTITION BY material, plant
+                      ORDER BY iso_year, iso_week
+                    ) AS opening_stock
+                FROM merged
+            )
+            SELECT
+              material,
+              plant,
+              iso_year,
+              iso_week,
+              opening_stock,
+              closing_stock,
+              change
+            FROM rolling
+            ORDER BY material, iso_year, iso_week;
+        """
+        # 3. Fetch all results
+        stock_rows = await conn.fetch(
+            stock_query,
+            plant,
+            date_min,
+            date_max
+        )
 
-            # --- Combine stock and movement into result
-            for row in stock_rows:
-                material = row["material"].strip()
-                latest_stock = row["latest_daily_stock"] or 0
-                move_data = move_map.get(material, {})
+        # 4. Map iso_year/iso_week to rel_week (W-4..W-1) using your week_ranges
+        week_lookup = {}
+        for rel, start, end in week_ranges:
+            # week key: (iso_year, iso_week)
+            iso_year, iso_week, *_ = (
+                start.isocalendar()  # (year, week, weekday)
+            )
+            week_lookup[(iso_year, iso_week)] = rel
 
-                result.append({
-                    "material": material,
-                    "week": rel_week,
-                    "projectedStock": int(latest_stock),
-                    "moveIn": int(move_data.get("move_in", 0)),
-                    "moveOut": int(move_data.get("move_out", 0)),
-                })
+        result = []
+        for row in stock_rows:
+            iso_year = int(row["iso_year"])
+            iso_week = int(row["iso_week"])
+            rel_week = week_lookup.get((iso_year, iso_week), None)
+            if rel_week is None:
+                continue
+            result.append({
+                "material": row["material"].strip(),
+                "week": rel_week,
+                "openingStock": int(row["opening_stock"]) if row["opening_stock"] is not None else 0,
+                "closingStock": int(row["closing_stock"]) if row["closing_stock"] is not None else 0,
+                "change": int(row["change"]) if row["change"] is not None else 0,
+            })
+
+        # (Optional) Patch missing weeks/materials with previous closingStock if needed!
+        result = patch_missing_weeks(result)
+        result = backfill_opening_stock(result, weeks=[-4, -3, -2, -1])
 
         return result
 
@@ -202,35 +293,6 @@ async def get_historical_stock(plant: str = Query("15KA")):
     finally:
         await conn.close()
 
-
-
-@app.get("/api/pending-orders", response_model=List[Order])
-async def get_peding_orders():
-    conn = await get_db_connection()
-    enriched_orders = []
-    try:
-        for order in order_list:
-            item = await conn.fetchrow(
-                """
-                SELECT name, category, supplier
-                FROM themall_poc.app_inventory_items_cal
-                WHERE TRIM(sku) = $1 AND plnt = $2
-                """,
-                order.sku.strip()
-            )
-
-            enriched_orders.append({
-                **order.dict(),
-                "name": item["name"] if item else "Unknown",
-                "category": item["category"] if item else "Unknown",
-                "supplier": item["supplier"] if item else "Unknown",
-            })
-        return {"orders": enriched_orders}
-    except Exception as e:
-        print(f"Error in get_orders: {e}")
-        raise HTTPException(status_code=500, detail="Error fetching order details")
-    finally:
-        await conn.close()
 
 
 @app.get("/api/dashboard/metrics")
@@ -278,7 +340,7 @@ async def get_dashboard_metrics(plant: str = Query("15KA")):
         forecast_rows = await conn.fetch("""
             SELECT id, name, sku, current_stock, reorder_point, category, supplier
             FROM themall_poc.app_inventory_items_cal
-            WHERE TRIM(sku) = ANY($1::text[]) AND plnt = $2
+            WHERE TRIM(sku) = ANY($1::text[]) AND plant = $2
         """, good_skus, plant)
 
         low_stock_items = 0
@@ -306,15 +368,18 @@ async def get_dashboard_metrics(plant: str = Query("15KA")):
     finally:
         await conn.close()
 
+import httpx
+from fastapi import Query, HTTPException
+from typing import List
 
 @app.get("/api/forecast", response_model=List[InventoryItemWithForecast])
 async def get_forecast(plant: str = Query("15KA")):
+    import datetime as dt
+    from datetime import datetime
+
     conn = await get_db_connection()
     try:
-        import datetime as dt
-        from datetime import datetime
-
-        # ✅ Step 1: Generate week mapping (-4 to +8)
+        # --- Week mapping (-4 to +8) ---
         week_map_query = """
             WITH week_series AS (
                 SELECT generate_series(-4, 8) AS relative_week
@@ -334,8 +399,9 @@ async def get_forecast(plant: str = Query("15KA")):
         """
         week_rows = await conn.fetch(week_map_query)
         week_map = {row["relative_week"]: (row["iso_year"], row["iso_week"]) for row in week_rows}
+        w_minus_1_year, w_minus_1_week = week_map[-1]
 
-        # ✅ Step 2: Get distinct SKUs and item names
+        # --- Get SKUs & metadata ---
         sku_query = """
             SELECT DISTINCT material AS sku, item_desc
             FROM themall_poc.final_order_table
@@ -344,16 +410,14 @@ async def get_forecast(plant: str = Query("15KA")):
         sku_rows = await conn.fetch(sku_query, plant)
         sku_list = [{"sku": row["sku"].strip(), "item_desc": row["item_desc"].strip()} for row in sku_rows]
 
-        # ✅ Step 3: Get actual stock and reorder point
         stock_query = """
-            SELECT sku, current_stock, reorder_point, category, supplier
+            SELECT sku, reorder_point, category, supplier
             FROM themall_poc.app_inventory_items_cal
-            WHERE plnt = $1
+            WHERE plant = $1
         """
         stock_rows = await conn.fetch(stock_query, plant)
         stock_map = {
             row["sku"].strip(): {
-                "current_stock": row["current_stock"],
                 "reorder_point": row["reorder_point"],
                 "category": row["category"].strip(),
                 "supplier": row["supplier"].strip(),
@@ -361,60 +425,61 @@ async def get_forecast(plant: str = Query("15KA")):
             for row in stock_rows
         }
 
-        # ✅ Step 4: Load demand (actual + predicted)
+        # --- Demand (predicted order quantity for weeks 0 to 8) ---
         all_weeks = [(year, week) for _, (year, week) in week_map.items()]
         year_list = [year for year, week in all_weeks]
         week_list = [week for year, week in all_weeks]
-
         demand_query = """
-            SELECT material, iso_year, iso_week, actual_order_qty, pred_order_qty
+            SELECT material, iso_year, iso_week, pred_order_qty
             FROM themall_poc.final_order_table
             WHERE plnt = $3
               AND (iso_year, iso_week) IN (SELECT UNNEST($1::int[]), UNNEST($2::int[]))
         """
         demand_rows = await conn.fetch(demand_query, year_list, week_list, plant)
-
-        # ✅ Demand lookup
         demand_lookup = {}
         for row in demand_rows:
             key = (row["material"].strip(), row["iso_year"], row["iso_week"])
-            demand_lookup[key] = {
-                "actual": row["actual_order_qty"] or 0,
-                "predict": row["pred_order_qty"] or 0,
-            }
+            demand_lookup[key] = int(row["pred_order_qty"] or 0)
 
-        # ✅ Step 5: Build result
+        # --- Historical closing stock for W-1 (pull via API!) ---
+        async with httpx.AsyncClient() as client:
+            hist_url = f"http://localhost:8000/api/historical-stock?plant={plant}"
+            resp = await client.get(hist_url)
+            hist_data = resp.json()
+            # index by material, week
+            hist_lookup = {}
+            for row in hist_data:
+                hist_lookup[(row["material"].strip(), row["week"])] = row["closingStock"]
+
+        # --- Forecast computation ---
         forecast_results = []
-
         for idx, sku_info in enumerate(sku_list):
             sku = sku_info["sku"]
             name = sku_info["item_desc"]
-
             stock_info = stock_map.get(sku)
             if not stock_info:
                 continue
 
-            stock = int(stock_info["current_stock"])
             reorder_point = int(stock_info["reorder_point"])
             category = stock_info["category"]
             supplier = stock_info["supplier"]
 
+            # Start from closing stock of W-1
+            seed_stock = hist_lookup.get((sku, -1), 0)
+            stock = seed_stock
             stock_status_list = []
-            total_demand = 0
 
-            for rel_week in range(0, 9):  # ✅ Week 0 to Week +8
+            for rel_week in range(0, 9):  # 0 (current) to 8 weeks ahead
                 iso_year, iso_week = week_map[rel_week]
                 key = (sku, iso_year, iso_week)
+                forecasted_demand = demand_lookup.get(key, 0)
+                if forecasted_demand is None:
+                    forecasted_demand = 0
+                if stock is None:
+                    stock = 0
+                next_stock = stock - forecasted_demand if rel_week < 8 else None
 
-                forecasted_demand = demand_lookup.get(key, {}).get("predict", 0)
-                demand = forecasted_demand  # ✅ For stock deduction
-
-                # Calculate next week's stock for status logic
-                next_key = (sku, *week_map.get(rel_week + 1, (0, 0)))
-                next_demand = demand_lookup.get(next_key, {}).get("predict", 0)
-                next_stock = stock - next_demand if rel_week < 8 else None
-
-                # ✅ Status logic
+                # Status logic (tweak as needed)
                 if stock <= 0 or stock <= reorder_point:
                     status = "critical"
                 elif next_stock is not None and (next_stock <= 0 or next_stock <= reorder_point):
@@ -425,28 +490,27 @@ async def get_forecast(plant: str = Query("15KA")):
                 stock_status_list.append({
                     "week": rel_week,
                     "projectedStock": int(stock),
-                    "moveIn": 0,
-                    "moveOut": 0,
                     "forecastedDemand": int(forecasted_demand),
                     "isHistorical": False,
                     "status": status,
                 })
+                if forecasted_demand is None:
+                    forecasted_demand = 0
+                if stock is None:
+                    stock = 0
 
-                stock -= int(demand)
-                total_demand += demand
-
-            if total_demand == 0:
-                continue
+                stock -= int(forecasted_demand)
+                stock -= forecasted_demand
 
             forecast_results.append(InventoryItemWithForecast(
                 id=idx + 1,
                 name=name,
                 sku=sku,
-                currentStock=int(stock_info["current_stock"]),
-                reorderPoint=reorder_point,
+                currentStock=seed_stock or 0,
+                reorderPoint=reorder_point or 0,
                 category=category,
                 supplier=supplier,
-                stockStatus=stock_status_list
+                stockStatus=stock_status_list,
             ))
 
         return forecast_results
@@ -454,9 +518,9 @@ async def get_forecast(plant: str = Query("15KA")):
     except Exception as e:
         print(f"Forecast error: {e}")
         raise HTTPException(status_code=500, detail="Error generating forecast")
-
     finally:
         await conn.close()
+
 
 
 
@@ -525,7 +589,7 @@ async def delete_order(order_id: int):
 async def get_plants():
     conn = await get_db_connection()
     try:
-        rows = await conn.fetch("SELECT DISTINCT plnt FROM themall_poc.app_inventory_items_cal")
-        return [row['plnt'] for row in rows]
+        rows = await conn.fetch("SELECT DISTINCT plant FROM themall_poc.app_inventory_items_cal")
+        return [row['plant'] for row in rows]
     finally:
         await conn.close()

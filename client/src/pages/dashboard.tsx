@@ -120,7 +120,6 @@ export default function Dashboard() {
           </div>
         </div>
       </header>
-
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Dashboard Overview */}
         <div className="mb-8">
@@ -129,7 +128,6 @@ export default function Dashboard() {
               <h2 className="text-xl font-semibold">
                 Inventory Dashboard (as of {formattedDate}, {formattedTime})
               </h2>
-
               <p className="text-gray-600 mt-1">Monitor stock levels and optimize your inventory</p>
             </div>
             <div className="flex items-center space-x-2 mt-4 sm:mt-0">
@@ -140,7 +138,6 @@ export default function Dashboard() {
               </Button>
             </div>
           </div>
-
           {/* NEW: Plant selector */}
           <div className="mb-6">
             <label className="font-semibold mr-2">Plant:</label>
@@ -157,19 +154,15 @@ export default function Dashboard() {
               ))}
             </select>
           </div>
-
           <MetricsCards metrics={metrics} isLoading={isLoading} />
         </div>
-
         {/* 7-Day Forecast Table */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
-          <ForecastTable inventory={inventory} isLoading={isLoading} />
+          <ForecastTable plant={selectedPlant} inventory={inventory} isLoading={isLoading} />
         </div>
-
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           <AIInsights inventory={inventory} metrics={metrics} />
         </div>
-
         <StockChart forecast={inventory} />
       </div>
     </div>
