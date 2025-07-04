@@ -295,71 +295,53 @@ async def get_historical_stock(plant: str = Query("15KA")):
 
 
 
+from fastapi import APIRouter, Query, HTTPException
+from typing import Dict
+
 @app.get("/api/dashboard/metrics")
-async def get_dashboard_metrics(plant: str = Query("15KA")):
+async def get_dashboard_metrics(plant: str = Query("15KA")) -> Dict:
     conn = await get_db_connection()
-
     try:
-        # ✅ Step 1: First get SKUs that passed historical check
-        sku_query = """
-            WITH latest AS (
-                SELECT iso_year, iso_week
-                FROM themall_poc.app_historical_stock
-                WHERE plnt = $1
-                ORDER BY iso_year DESC, iso_week DESC
-                LIMIT 1
-            ),
-            target_weeks AS (
-                SELECT (iso_year * 100 + iso_week - offs) AS week_key
-                FROM latest, generate_series(1, 4) AS offs
-            ),
-            good_materials AS (
-                SELECT material
-                FROM themall_poc.app_historical_stock h
-                JOIN target_weeks tw
-                  ON (h.iso_year * 100 + h.iso_week) = tw.week_key
-                WHERE h.plnt = $1
-                  AND h.latest_daily_stock > 0
-                GROUP BY material
-                HAVING COUNT(DISTINCT (h.iso_year * 100 + h.iso_week)) = 4
-            )
-            SELECT material AS sku
-            FROM good_materials;
-        """
-        sku_rows = await conn.fetch(sku_query, plant)
-        good_skus = [row["sku"].strip() for row in sku_rows]
+        # 1. Get unique SKUs from historical stock for this plant
+        sku_rows = await conn.fetch("""
+            SELECT DISTINCT TRIM(material) AS sku
+            FROM themall_poc.app_historical_stock
+            WHERE plnt = $1
+        """, plant)
+        sku_list = [row["sku"] for row in sku_rows]
 
-        if not good_skus:
+        if not sku_list:
             return {
                 "totalItems": 0,
                 "lowStockItems": 0,
-                "urgentItems": 0
+                "urgentItems": 0,
+                "pendingOrders": 12  # Hardcoded for now
             }
 
-        # ✅ Step 2: Now get current stock + reorder point for these SKUs only
-        forecast_rows = await conn.fetch("""
-            SELECT id, name, sku, current_stock, reorder_point, category, supplier
+        # 2. For these SKUs, get current_stock and reorder_point
+        inv_rows = await conn.fetch("""
+            SELECT sku, current_stock, reorder_point
             FROM themall_poc.app_inventory_items_cal
             WHERE TRIM(sku) = ANY($1::text[]) AND plant = $2
-        """, good_skus, plant)
+        """, sku_list, plant)
 
-        low_stock_items = 0
-        urgent_items = 0
+        low_stock = 0
+        urgent = 0
 
-        for item in forecast_rows:
-            stock = item["current_stock"]
-            reorder_point = item["reorder_point"]
+        for row in inv_rows:
+            stock = row["current_stock"] or 0
+            rop = row["reorder_point"] or 0
 
-            # ✅ Same logic as frontend
-            if stock <= reorder_point:
-                urgent_items += 1
-            if stock <= reorder_point*1.1:
-                low_stock_items += 1
+            if stock <= rop * 1.5:
+                low_stock += 1
+            if stock <= rop:
+                urgent += 1
 
         return {
-            "totalItems": len(forecast_rows),
-            "lowStockItems": low_stock_items,
-            "urgentItems": urgent_items
+            "totalItems": len(sku_list),
+            "lowStockItems": low_stock,
+            "urgentItems": urgent,
+            "pendingOrders": 12
         }
 
     except Exception as e:
@@ -367,6 +349,7 @@ async def get_dashboard_metrics(plant: str = Query("15KA")):
         raise HTTPException(status_code=500, detail="Error calculating dashboard metrics")
     finally:
         await conn.close()
+
 
 import httpx
 from fastapi import Query, HTTPException
@@ -408,7 +391,14 @@ async def get_forecast(plant: str = Query("15KA")):
             WHERE plnt = $1
         """
         sku_rows = await conn.fetch(sku_query, plant)
-        sku_list = [{"sku": row["sku"].strip(), "item_desc": row["item_desc"].strip()} for row in sku_rows]
+        unique_skus = {}
+        for row in sku_rows:
+            sku = row["sku"].strip()
+            if sku not in unique_skus:
+                unique_skus[sku] = row["item_desc"].strip()
+        sku_list = [{"sku": sku, "item_desc": desc} for sku, desc in unique_skus.items()]
+        print(len(sku_list), "unique SKUs found")
+
 
         stock_query = """
             SELECT sku, reorder_point, category, supplier
@@ -458,7 +448,13 @@ async def get_forecast(plant: str = Query("15KA")):
             name = sku_info["item_desc"]
             stock_info = stock_map.get(sku)
             if not stock_info:
-                continue
+                # Provide default values so processing continues
+                stock_info = {
+                    "reorder_point": 0,
+                    "category": "",
+                    "supplier": "",
+                    "current_stock": 0
+                }
 
             reorder_point = int(stock_info["reorder_point"])
             category = stock_info["category"]
@@ -500,7 +496,6 @@ async def get_forecast(plant: str = Query("15KA")):
                     stock = 0
 
                 stock -= int(forecasted_demand)
-                stock -= forecasted_demand
 
             forecast_results.append(InventoryItemWithForecast(
                 id=idx + 1,
@@ -590,6 +585,6 @@ async def get_plants():
     conn = await get_db_connection()
     try:
         rows = await conn.fetch("SELECT DISTINCT plant FROM themall_poc.app_inventory_items_cal")
-        return [row['plant'] for row in rows]
+        return sorted([row['plant'] for row in rows])
     finally:
         await conn.close()
