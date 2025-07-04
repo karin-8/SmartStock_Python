@@ -27,7 +27,7 @@ const formattedTime = now.toLocaleTimeString(undefined, {
 export default function Dashboard() {
   // NEW: plant options, selected plant
   const [plantOptions, setPlantOptions] = useState<string[]>([]);
-  const [selectedPlant, setSelectedPlant] = useState("");
+  const [selectedPlant, setSelectedPlant] = useState("15KA");
 
   // Fetch plant options on mount
   useEffect(() => {

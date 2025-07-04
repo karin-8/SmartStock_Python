@@ -27,8 +27,17 @@ function getStatusBadge(status: "okay" | "low" | "critical") {
     low: "bg-yellow-100 text-yellow-800",
     critical: "bg-red-100 text-red-800",
   };
-  return <Badge className={`${style[status]} text-xs capitalize`}>{status}</Badge>;
+  // Use "Must Order" for critical
+  const label = status === "critical" ? "Must Order" : status.charAt(0).toUpperCase() + status.slice(1);
+
+  // 🟢 Add tight padding and slim radius!
+  return (
+    <Badge className={`${style[status]} text-xs font-semibold px-2 py-0.5 rounded-md`}>
+      {label}
+    </Badge>
+  );
 }
+
 
 export function ForecastTable({ plant }: { plant: string }) {
   const [forecastData, setForecastData] = useState<InventoryItemWithForecast[]>([]);
@@ -42,7 +51,7 @@ export function ForecastTable({ plant }: { plant: string }) {
 
   const [stockViewMode, setStockViewMode] = useState<"open" | "movement" | "remaining" | "forecast">("open");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
-  const weeks = [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8];
+  const weeks = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
 
   const handleOpenOrderPopup = (item: InventoryItemWithForecast) => {
     setSelectedItem(item);
@@ -194,117 +203,149 @@ export function ForecastTable({ plant }: { plant: string }) {
             <th className="w-6"></th> {/* Chevron column */}
             <th className="px-4 py-2 text-left text-xs text-gray-500 uppercase">Item</th>
             {weeks.map(week => (
-              <th key={week} className="px-1 py-1 text-center text-xs text-gray-500">
+              <th
+                key={week}
+                className={
+                  "px-1 py-1 text-center text-xs text-gray-500 " +
+                  (week === 0 ? "font-bold text-gray-900" : "")
+                }
+              >
                 {week < 0 ? `W${week}` : week === 0 ? "Current" : `W+${week}`}
               </th>
             ))}
             <th className="px-3 py-2 text-right text-xs text-gray-500">Action</th>
           </tr>
         </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
-          {filteredInventory.map(item => (
-            <React.Fragment key={item.id}>
-              {/* Main Row: Opening Stock only */}
-              <tr className="hover:bg-gray-50">
-                {/* Chevron */}
-                <td className="px-2 py-2 text-center align-middle">
-                  <button
-                    onClick={() => {
-                      setExpandedRows(prev =>
-                        prev.has(item.id)
-                          ? new Set([...prev].filter(id => id !== item.id))
-                          : new Set([...prev, item.id])
-                      );
-                    }}
-                    className="focus:outline-none"
-                    aria-label={expandedRows.has(item.id) ? "Collapse details" : "Expand details"}
-                  >
-                    {expandedRows.has(item.id) ? (
-                      <ChevronDown className="w-4 h-4" />
-                    ) : (
-                      <ChevronRight className="w-4 h-4" />
-                    )}
-                  </button>
-                </td>
-                {/* Name & SKU */}
-                <td className="px-4 py-2">
-                  <div className="text-sm font-medium">{item.name}</div>
-                  <div className="text-xs text-gray-500">SKU: {item.sku}</div>
-                </td>
-                {/* Opening stock for all weeks */}
-                {weeks.map(weekNum => (
-                  <td key={weekNum} className="px-1 py-2 text-center">
-                    {getDisplayValue(item, weekNum)}
-                  </td>
-                ))}
-                {/* Action */}
-                <td className="px-3 py-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => handleOpenOrderPopup(item)}>
-                    Create Order
-                  </Button>
-                </td>
-              </tr>
-              {/* Expanded Attribute Rows */}
-              {expandedRows.has(item.id) && (
-                <>
-                  {/* Change */}
-                  <tr className="bg-gray-50 text-xs text-center">
-                    <td></td>
-                    <td className="font-semibold text-gray-600 text-right pr-3">Change</td>
-                    {weeks.map(weekNum => {
-                      let value;
-                      if (weekNum < 0) {
-                        const hist = historicalData.find(
-                          h => h.material.trim() === item.sku.trim() && h.week === weekNum
+        <tbody className="bg-white">
+          {filteredInventory.map(item => {
+            // Get status for current week (week === 0)
+            const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
+
+            return (
+              <React.Fragment key={item.id}>
+                {/* Main Row: Opening Stock only */}
+                <tr className="hover:bg-gray-50 border-b">
+                  {/* Chevron */}
+                  <td className="px-2 py-2 text-center align-middle">
+                    <button
+                      onClick={() => {
+                        setExpandedRows(prev =>
+                          prev.has(item.id)
+                            ? new Set([...prev].filter(id => id !== item.id))
+                            : new Set([...prev, item.id])
                         );
-                        value = hist?.change ?? "-";
-                      } else {
-                        // For future weeks, you can display "-" or use forecast logic if you have any
-                        value = "-";
+                      }}
+                      className="focus:outline-none"
+                      aria-label={expandedRows.has(item.id) ? "Collapse details" : "Expand details"}
+                    >
+                      {expandedRows.has(item.id) ? (
+                        <ChevronDown className="w-4 h-4" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4" />
+                      )}
+                    </button>
+                  </td>
+                  {/* Name & SKU, with Status Badge */}
+                  <td className="px-4 py-2 align-middle">
+                    <div className="flex items-center justify-between min-w-0">
+                      <span className="text-sm font-medium text-left block truncate max-w-[12rem]">
+                        {item.name}
+                      </span>
+                      <span className="ml-2 whitespace-nowrap">{currentStatus && getStatusBadge(currentStatus)}</span>
+                    </div>
+                    <div className="text-xs text-gray-500 text-left truncate">
+                      SKU: {item.sku}
+                      <span className="mx-2">|</span>
+                      Reorder Point: {item.reorderPoint}
+                    </div>
+                  </td>
+                  {/* Opening stock for all weeks */}
+                  {weeks.map(weekNum => (
+                    <td
+                      key={weekNum}
+                      className={
+                        "px-1 py-2 text-center" +
+                        (weekNum === 0 ? " font-bold text-gray-900" : "")
                       }
-                      return <td key={weekNum}>{value}</td>;
-                    })}
-                    <td></td>
-                  </tr>
-                  {/* Remain */}
-                  <tr className="bg-gray-50 text-xs text-center">
-                    <td></td>
-                    <td className="font-semibold text-gray-600 text-right pr-3">Remain</td>
-                    {weeks.map(weekNum => {
-                      let value;
-                      if (weekNum < 0) {
-                        const hist = historicalData.find(h => h.material.trim() === item.sku.trim() && h.week === weekNum);
-                        value = hist ? Math.round(hist.openingStock + hist.change) : "-";
-                      } else {
-                        const weekData = item.stockStatus.find(s => s.week === weekNum);
-                        value = weekData
-                          ? Math.round(weekData.projectedStock - (weekData.forecastedDemand ?? 0))
-                          : "-";
-                      }
-                      return <td key={weekNum}>{value}</td>;
-                    })}
-                    <td></td>
-                  </tr>
-                  {/* Forecast */}
-                  <tr className="bg-gray-50 text-xs text-center">
-                    <td></td>
-                    <td className="font-semibold text-gray-600 text-right pr-3">Forecast</td>
-                    {weeks.map(weekNum => {
-                      let value;
-                      if (weekNum < 0) {
-                        value = "-";
-                      } else {
-                        const weekData = item.stockStatus.find(s => s.week === weekNum);
-                        value = weekData?.forecastedDemand ?? "-";
-                      }
-                      return <td key={weekNum}>{value}</td>;
-                    })}
-                    <td></td>
-                  </tr>
-                </>
-              )}
-            </React.Fragment>
-          ))}
+                    >
+                      {getDisplayValue(item, weekNum)}
+                    </td>
+                  ))}
+                  {/* Action */}
+                  <td className="px-3 py-2 text-right">
+                    <Button variant="outline" size="sm" onClick={() => handleOpenOrderPopup(item)}>
+                      Create Order
+                    </Button>
+                  </td>
+                </tr>
+                {/* Expanded Attribute Rows */}
+                {expandedRows.has(item.id) && (
+                  <>
+                    {/* Change [Forecast] */}
+                    <tr className="bg-gray-50 text-xs text-center">
+                      <td></td>
+                      <td className="font-semibold text-gray-600 text-right pr-3">
+                        Change [Forecast]
+                      </td>
+                      {weeks.map(weekNum => {
+                        let value;
+                        if (weekNum < 0) {
+                          // Historical: +N for positive, N for negative/zero, "-" for missing
+                          const hist = historicalData.find(
+                            h => h.material.trim() === item.sku.trim() && h.week === weekNum
+                          );
+                          if (hist?.change === undefined || hist?.change === null) {
+                            value = "-";
+                          } else if (hist.change > 0) {
+                            value = `+${hist.change}`;
+                          } else {
+                            value = `${hist.change}`;
+                          }
+                        } else {
+                          // Forecast: Always show as [-N] (even if original is positive)
+                          const weekData = item.stockStatus.find(s => s.week === weekNum);
+                          if (
+                            weekData &&
+                            weekData.forecastedDemand !== undefined &&
+                            weekData.forecastedDemand !== null
+                          ) {
+                            const val = -Math.abs(weekData.forecastedDemand);
+                            value = `[${val}]`;
+                          } else {
+                            value = "-";
+                          }
+                        }
+                        return <td key={weekNum}>{value}</td>;
+                      })}
+                      <td></td>
+                    </tr>
+                    {/* Remain */}
+                   <tr className="bg-gray-50 text-xs text-center font-bold border-b rounded-b-xl">
+                      <td></td>
+                      <td className="font-semibold text-gray-600 text-right pr-3">Remain</td>
+                      {weeks.map(weekNum => {
+                        let value;
+                        if (weekNum < 0) {
+                          const hist = historicalData.find(
+                            h => h.material.trim() === item.sku.trim() && h.week === weekNum
+                          );
+                          value = hist ? Math.round(hist.openingStock + hist.change) : "-";
+                        } else {
+                          const weekData = item.stockStatus.find(s => s.week === weekNum);
+                          value = weekData
+                            ? Math.round(weekData.projectedStock - (weekData.forecastedDemand ?? 0))
+                            : "-";
+                        }
+                        return <td key={weekNum}>{value}</td>;
+                      })}
+                      <td></td>
+                    </tr>
+                  </>
+                )}
+              </React.Fragment>
+            );
+
+          })}
         </tbody>
       </table>
     </div>
