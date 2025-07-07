@@ -150,11 +150,9 @@ async def get_historical_stock(plant: str = Query("15KA")):
     from datetime import datetime, timedelta
     conn = await get_db_connection()
     try:
-        # 1. Define anchor and weeks (W-4 .. W-1)
-        anchor_date = datetime(2024, 12, 23)  # <-- Use your actual anchor if needed!
+        anchor_date = datetime(2024, 12, 23)
         week_ranges = []
-        for rel_week in range(-4, 0):  # W-4 to W-1
-            # Each week starts on Monday!
+        for rel_week in range(-4, 0):
             start = (anchor_date - timedelta(days=anchor_date.weekday())) + timedelta(weeks=rel_week)
             end = start + timedelta(days=6)
             week_ranges.append((rel_week, start.date(), end.date()))
@@ -162,108 +160,130 @@ async def get_historical_stock(plant: str = Query("15KA")):
         date_min = min(start for _, start, _ in week_ranges)
         date_max = max(end for _, _, end in week_ranges)
 
-        # 2. Query ALL relevant data at once (for window functions to work!)
         stock_query = """
-            WITH raw_data AS (
-                SELECT
-                    material,
-                    plant,
-                    d_period::date AS date,
-                    EXTRACT(isoyear FROM d_period::date) AS iso_year,
-                    EXTRACT(week FROM d_period::date) AS iso_week,
-                    move_qty,
-                    daily_stock
-                FROM themall_poc.f_stock_daily_3
-                WHERE plant = $1
-                  AND d_period::date >= $2
-                  AND d_period::date <= $3
-            ),
-            by_week AS (
-                SELECT
-                    material,
-                    plant,
-                    iso_year,
-                    iso_week,
-                    MIN(date) AS week_start,
-                    MAX(date) AS week_end
-                FROM raw_data
-                GROUP BY material, plant, iso_year, iso_week
-            ),
-            weekly_change AS (
-                SELECT
-                    material,
-                    plant,
-                    iso_year,
-                    iso_week,
-                    SUM(move_qty) AS change
-                FROM raw_data
-                GROUP BY material, plant, iso_year, iso_week
-            ),
-            closing_stock AS (
-                SELECT
-                    r.material,
-                    r.plant,
-                    r.iso_year,
-                    r.iso_week,
-                    r.daily_stock AS closing_stock
-                FROM raw_data r
-                JOIN by_week b
-                  ON r.material = b.material
-                 AND r.plant = b.plant
-                 AND r.iso_year = b.iso_year
-                 AND r.iso_week = b.iso_week
-                 AND r.date = b.week_end
-            ),
-            merged AS (
-                SELECT
-                    w.material,
-                    w.plant,
-                    w.iso_year,
-                    w.iso_week,
-                    w.change,
-                    c.closing_stock
-                FROM weekly_change w
-                JOIN closing_stock c
-                  ON w.material = c.material
-                 AND w.plant = c.plant
-                 AND w.iso_year = c.iso_year
-                 AND w.iso_week = c.iso_week
-            ),
-            rolling AS (
-                SELECT
-                    *,
-                    LAG(closing_stock) OVER (
-                      PARTITION BY material, plant
-                      ORDER BY iso_year, iso_week
-                    ) AS opening_stock
-                FROM merged
-            )
+        WITH raw_data AS (
             SELECT
-              material,
-              plant,
-              iso_year,
-              iso_week,
-              opening_stock,
-              closing_stock,
-              change
-            FROM rolling
-            ORDER BY material, iso_year, iso_week;
-        """
-        # 3. Fetch all results
-        stock_rows = await conn.fetch(
-            stock_query,
-            plant,
-            date_min,
-            date_max
-        )
+                material,
+                plant,
+                d_period::date AS date,
+                EXTRACT(isoyear FROM d_period::date) AS iso_year,
+                EXTRACT(week FROM d_period::date) AS iso_week,
+                move_qty,
+                daily_stock
+            FROM themall_poc.f_stock_daily_3
+            WHERE plant = $3
+              AND d_period::date BETWEEN $1::date AND $2::date
+        ),
+        by_week AS (
+            SELECT
+                material,
+                plant,
+                iso_year,
+                iso_week,
+                MIN(date) AS week_start,
+                MAX(date) AS week_end
+            FROM raw_data
+            GROUP BY material, plant, iso_year, iso_week
+        ),
+        weekly_change AS (
+            SELECT
+                material,
+                plant,
+                iso_year,
+                iso_week,
+                SUM(move_qty) AS change
+            FROM raw_data
+            GROUP BY material, plant, iso_year, iso_week
+        ),
+        closing_stock AS (
+            SELECT
+                r.material,
+                r.plant,
+                r.iso_year,
+                r.iso_week,
+                r.daily_stock AS closing_stock
+            FROM raw_data r
+            JOIN by_week b
+              ON r.material = b.material
+             AND r.plant = b.plant
+             AND r.iso_year = b.iso_year
+             AND r.iso_week = b.iso_week
+             AND r.date = b.week_end
+        ),
+        merged AS (
+            SELECT
+                w.material,
+                w.plant,
+                w.iso_year,
+                w.iso_week,
+                w.change,
+                c.closing_stock
+            FROM weekly_change w
+            JOIN closing_stock c
+              ON w.material = c.material
+             AND w.plant = c.plant
+             AND w.iso_year = c.iso_year
+             AND w.iso_week = c.iso_week
+        ),
+        rolling AS (
+            SELECT
+                *,
+                LAG(closing_stock) OVER (
+                  PARTITION BY material, plant
+                  ORDER BY iso_year, iso_week
+                ) AS opening_stock
+            FROM merged
+        ),
+        -- Fix for raw_mb51 CTE - handle string date conversion more safely
+        raw_mb51 AS (
+            SELECT
+                material,
+                plant,
+                TO_DATE(posting_date, 'YYYY-MM-DD') AS date,  -- Specify expected format
+                EXTRACT(isoyear FROM TO_DATE(posting_date, 'YYYY-MM-DD')) AS iso_year,
+                EXTRACT(week FROM TO_DATE(posting_date, 'YYYY-MM-DD')) AS iso_week,
+                unit_entry_qty::numeric AS unit_entry_qty  -- Cast once here
+            FROM themall_poc.f_mb51_top50
+            WHERE plant = $3
+            AND TO_DATE(posting_date, 'YYYY-MM-DD') BETWEEN $1::date AND $2::date
+        ),
 
-        # 4. Map iso_year/iso_week to rel_week (W-4..W-1) using your week_ranges
+        -- Fix for move_summary - use already converted numeric value
+        move_summary AS (
+            SELECT
+                material,
+                plant,
+                iso_year,
+                iso_week,
+                SUM(CASE WHEN unit_entry_qty > 0 THEN unit_entry_qty ELSE 0 END) AS move_in,
+                SUM(CASE WHEN unit_entry_qty < 0 THEN ABS(unit_entry_qty) ELSE 0 END) AS move_out
+            FROM raw_mb51
+            GROUP BY material, plant, iso_year, iso_week
+        )
+        SELECT
+          r.material,
+          r.plant,
+          r.iso_year,
+          r.iso_week,
+          r.opening_stock,
+          r.closing_stock,
+          r.change,
+          COALESCE(m.move_in, 0) AS move_in,
+          COALESCE(m.move_out, 0) AS move_out
+        FROM rolling r
+        LEFT JOIN move_summary m
+          ON r.material = m.material
+         AND r.plant = m.plant
+         AND r.iso_year = m.iso_year
+         AND r.iso_week = m.iso_week
+        ORDER BY r.material, r.iso_year, r.iso_week;
+        """
+
+        stock_rows = await conn.fetch(stock_query, date_min, date_max, plant)
+
         week_lookup = {}
         for rel, start, end in week_ranges:
-            # week key: (iso_year, iso_week)
-            iso_year, iso_week, *_ = (
-                start.isocalendar()  # (year, week, weekday)
-            )
+            iso_year, iso_week, *_ = start.isocalendar()
             week_lookup[(iso_year, iso_week)] = rel
 
         result = []
@@ -279,9 +299,10 @@ async def get_historical_stock(plant: str = Query("15KA")):
                 "openingStock": int(row["opening_stock"]) if row["opening_stock"] is not None else 0,
                 "closingStock": int(row["closing_stock"]) if row["closing_stock"] is not None else 0,
                 "change": int(row["change"]) if row["change"] is not None else 0,
+                "moveIn": int(row["move_in"]) if row["move_in"] is not None else 0,
+                "moveOut": int(row["move_out"]) if row["move_out"] is not None else 0,
             })
 
-        # (Optional) Patch missing weeks/materials with previous closingStock if needed!
         result = patch_missing_weeks(result)
         result = backfill_opening_stock(result, weeks=[-4, -3, -2, -1])
 

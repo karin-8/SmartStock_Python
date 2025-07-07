@@ -1,16 +1,29 @@
 import { useState, useEffect, useMemo } from "react";
-import { Filter, Download, X, Package } from "lucide-react";
+import { Filter, Download, X, Package, ChevronRight, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import React from "react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+  ReferenceArea,
+  LabelList,
+  Label,
+} from "recharts";
+
+// Import your types and utilities
 import { exportInventorySummary } from "@/lib/export-utils";
 import type { InventoryItemWithForecast } from "@shared/schema";
-import { ChevronRight, ChevronDown } from "lucide-react"; // Add this to your imports
 import OrderPopup from "./order-popup";
-import React from "react";
-
 
 type HistoricalStockItem = {
   material: string;
@@ -18,8 +31,16 @@ type HistoricalStockItem = {
   openingStock: number;
   closingStock: number;
   change: number;
+  moveIn: number;
+  moveOut: number;
 };
 
+type StockChartProps = {
+  data: Array<{ week: string; value: number }>;
+  title: string;
+  reorderPoint?: number;
+  chartType?: "opening" | "change" | "remain";
+};
 
 function getStatusBadge(status: "okay" | "low" | "critical") {
   const style = {
@@ -27,10 +48,8 @@ function getStatusBadge(status: "okay" | "low" | "critical") {
     low: "bg-yellow-100 text-yellow-800",
     critical: "bg-red-100 text-red-800",
   };
-  // Use "Must Order" for critical
   const label = status === "critical" ? "Must Order" : status.charAt(0).toUpperCase() + status.slice(1);
 
-  // 🟢 Add tight padding and slim radius!
   return (
     <Badge className={`${style[status]} text-xs font-semibold px-2 py-0.5 rounded-md`}>
       {label}
@@ -38,6 +57,291 @@ function getStatusBadge(status: "okay" | "low" | "critical") {
   );
 }
 
+function IntegratedStockChart({ 
+  data, 
+  title, 
+  reorderPoint, 
+  chartType = "opening",
+  isConnected = false 
+}: StockChartProps & { isConnected?: boolean }) {
+  
+  // Calculate safety stock (10% of ROP, rounded up)
+  const safetyStock = reorderPoint ? Math.ceil(reorderPoint * 0.1) : undefined;
+  
+  // Calculate Y-axis domain to ensure ROP is visible
+  const yAxisDomain = useMemo(() => {
+    const values = data.map(d => d.value);
+    const minValue = Math.min(...values);
+    const maxValue = Math.max(...values);
+    
+    let domainMin = minValue;
+    let domainMax = maxValue;
+    
+    // If we have reorderPoint and it's for opening/remain charts, ensure it's visible
+    if (reorderPoint && (chartType === "opening" || chartType === "remain")) {
+      domainMin = Math.min(domainMin, reorderPoint);
+      domainMax = Math.max(domainMax, reorderPoint);
+      
+      // Add some padding around the ROP
+      const padding = Math.max(10, (domainMax - domainMin) * 0.1);
+      domainMin = Math.max(0, domainMin - padding);
+      domainMax = domainMax + padding;
+    }
+    
+    // If we have safety stock, ensure it's visible too
+    if (safetyStock && (chartType === "opening" || chartType === "remain")) {
+      domainMin = Math.min(domainMin, safetyStock);
+      domainMax = Math.max(domainMax, safetyStock);
+    }
+    
+    return [domainMin, domainMax];
+  }, [data, reorderPoint, safetyStock, chartType]);
+
+  // Find the index of "Current" to determine forecast area
+  const currentIndex = data.findIndex(d => d.week === 'Current');
+  const forecastStartIndex = currentIndex >= 0 ? currentIndex : data.findIndex(d => d.week.includes('W+'));
+  const lastIndex = data.length - 1;
+  
+  // Custom tooltip for better annotations
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      const value = payload[0].value;
+      const isHistorical = label.includes('W-');
+      const isCurrentWeek = label === 'Current';
+      
+      return (
+        <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
+          <p className="font-semibold text-gray-800">{label}</p>
+          <p className="text-blue-600">
+            {title}: <span className="font-bold">
+              {chartType === "change" ? 
+                Math.round(value) : 
+                Math.round(value)
+              }
+            </span>
+          </p>
+          {reorderPoint && (
+            <p className="text-red-600 text-sm">
+              ROP: {reorderPoint}
+            </p>
+          )}
+          {safetyStock && (
+            <p className="text-orange-600 text-sm">
+              Safety: {safetyStock}
+            </p>
+          )}
+          {isHistorical && (
+            <p className="text-gray-500 text-xs">Historical Data</p>
+          )}
+          {isCurrentWeek && (
+            <p className="text-orange-600 text-xs font-medium">Current Week</p>
+          )}
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // Custom label formatter for data points
+  const formatDataLabel = (value) => {
+    return Math.round(value);
+  };
+
+  // Determine line color based on chart type
+  const lineColor = useMemo(() => {
+    if (chartType === "opening") return "#10b981"; // Green for opening
+    if (chartType === "remain") return "#f97316";  // Orange for remaining
+    return isConnected ? "#3b82f6" : "#6b7280"; // Blue for others, or default grey
+  }, [chartType, isConnected]);
+
+
+  // Find critical points for annotations
+  const criticalPoints = data.filter(point => 
+    reorderPoint && point.value <= reorderPoint
+  );
+
+  return (
+    <div className={`p-4 rounded-lg transition-all duration-200 ${
+      isConnected 
+        ? 'bg-blue-50 border-l-4 border-blue-400 ml-4 mr-2' 
+        : 'bg-gray-50'
+    }`}>
+      <h4 className="font-semibold text-sm mb-2 flex items-center justify-between">
+        <div className="flex items-center">
+          {isConnected && <div className="w-2 h-2 bg-blue-400 rounded-full mr-2"></div>}
+          {title}
+          {reorderPoint && safetyStock && (
+            <span className="ml-2 text-xs text-gray-600">
+              (ROP={reorderPoint}, Safety={safetyStock})
+            </span>
+          )}
+        </div>
+        {criticalPoints.length > 0 && (
+          <span className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded">
+            {criticalPoints.length} Critical Point{criticalPoints.length > 1 ? 's' : ''}
+          </span>
+        )}
+      </h4>
+      <ResponsiveContainer width="100%" height={180}>
+        <LineChart data={data} margin={{ top: 25, right: 30, left: 20, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <XAxis 
+            dataKey="week" 
+            tick={{ fontSize: 11 }}
+            tickLine={{ stroke: '#9ca3af' }}
+          />
+          <YAxis 
+            tick={{ fontSize: 11 }}
+            tickLine={{ stroke: '#9ca3af' }}
+            domain={yAxisDomain}
+          />
+          <Tooltip content={<CustomTooltip />} />
+          
+          {/* Yellow shading for forecast area */}
+          {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
+            <ReferenceArea
+              x1={data[forecastStartIndex].week}
+              x2={data[lastIndex].week}
+              fill="#FFFFCC"
+              fillOpacity={0.6}
+              stroke="none"
+            />
+          )}
+          
+          <Line 
+            type="monotone" 
+            dataKey="value" 
+            stroke={lineColor} 
+            // Use dynamic lineColor
+            strokeWidth={isConnected ? 3 : 2}
+            dot={{ fill: lineColor, r: 4 }}
+            activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
+          >
+            {/* Add value labels on all data points */}
+            <LabelList 
+              dataKey="value" 
+              position="top" 
+              style={{ fontSize: '10px', fill: '#374151', fontWeight: 'bold' }}
+              formatter={formatDataLabel}
+            />
+          </Line>
+          
+          {/* Reorder Point Reference Line */}
+          {reorderPoint && (
+            <ReferenceLine
+              y={reorderPoint}
+              stroke="#ef4444"
+              strokeDasharray="5 5"
+              strokeWidth={2}
+            >
+              <Label
+                value={`ROP=${reorderPoint}`}
+                position="insideRight"
+                offset={10}
+                dy={-12}
+                style={{
+                  fontSize: '11px',
+                  fill: '#dc2626',
+                  fontWeight: 'bold',
+                  backgroundColor: 'rgba(255,255,255,0.8)',
+                  padding: '2px 4px',
+                  borderRadius: '2px',
+                }}
+              />
+            </ReferenceLine>
+          )}
+          
+          {/* Safety Stock Reference Line */}
+          {safetyStock !== undefined && (chartType === "opening" || chartType === "remain") && (
+            <ReferenceLine
+              y={safetyStock}
+              stroke=" #f59e0b"
+              strokeDasharray="3 3"
+              strokeWidth={2}
+            >
+              <Label
+                value={`SAFETY=${safetyStock}`}
+                position="insideRight"
+                offset={10}
+                dy={12}
+                style={{
+                  fontSize: '11px',
+                  fill: '#d97706',
+                  fontWeight: 'bold',
+                  backgroundColor: 'rgba(255,255,255,0.8)',
+                  padding: '2px 4px',
+                  borderRadius: '2px',
+                }}
+              />
+            </ReferenceLine>
+          )}
+          
+          {/* Add vertical line to separate historical from forecast */}
+          <ReferenceLine 
+            x="Current" 
+            stroke="#f59e0b" 
+            strokeDasharray="2 2" 
+            strokeWidth={1}
+            label={{ 
+              value: "Now", 
+              position: "top",
+              style: { fontSize: '10px', fill: '#f59e0b' }
+            }}
+          />
+          
+          {/* Add "Forecast" label in the middle of the shaded area */}
+          {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
+            <ReferenceLine 
+              x={data[Math.floor((forecastStartIndex + lastIndex) / 2)].week}
+              stroke="none"
+              label={{ 
+                value: "Forecast", 
+                position: "center",
+                offset: 10,
+                style: { 
+                  fontSize: '12px', 
+                  fill: 'rgba(40, 36, 36)', 
+                  fontWeight: 'bold',
+                  backgroundColor: 'rgba(255,255,255,0.8)',
+                  padding: '2px 6px',
+                  borderRadius: '3px',
+                  border: '1px rgba(40, 36, 36)'
+                }
+              }}
+            />
+          )}
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function FilterSelect({
+  label, value, setValue, options, allOption = true
+}: {
+  label: string;
+  value: string;
+  setValue: (val: string) => void;
+  options: string[];
+  allOption?: boolean;
+}) {
+  return (
+    <div>
+      <label className="text-sm font-medium text-gray-700 block mb-2">{label}</label>
+      <Select value={value} onValueChange={setValue}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {allOption && <SelectItem value="all">All</SelectItem>}
+          {options.map(option => (
+            <SelectItem key={option} value={option}>{option}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 export function ForecastTable({ plant }: { plant: string }) {
   const [forecastData, setForecastData] = useState<InventoryItemWithForecast[]>([]);
@@ -48,19 +352,34 @@ export function ForecastTable({ plant }: { plant: string }) {
   const [supplierFilter, setSupplierFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState<InventoryItemWithForecast | null>(null);
   const [showOrderPopup, setShowOrderPopup] = useState(false);
-
-  const [stockViewMode, setStockViewMode] = useState<"open" | "movement" | "remaining" | "forecast">("open");
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const [expandedCharts, setExpandedCharts] = useState<Record<number, {
+    opening: boolean;
+    change: boolean;
+    remain: boolean;
+  }>>({});
+
   const weeks = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
+
+  const toggleChart = (id: number, chart: "opening" | "change" | "remain") => {
+    setExpandedCharts(prev => ({
+      ...prev,
+      [id]: {
+        ...prev[id],
+        [chart]: !prev[id]?.[chart],
+      },
+    }));
+  };
 
   const handleOpenOrderPopup = (item: InventoryItemWithForecast) => {
     setSelectedItem(item);
     setShowOrderPopup(true);
   };
 
+  // Restore your original data fetching
   useEffect(() => {
     if (!plant) return;
-    setIsLoading(true); // (optional) Start loading when plant changes
+    setIsLoading(true);
     async function fetchData() {
       try {
         const [forecastRes, historicalRes] = await Promise.all([
@@ -74,13 +393,11 @@ export function ForecastTable({ plant }: { plant: string }) {
       } catch (e) {
         console.error("Error fetching inventory/historical data", e);
       } finally {
-        setIsLoading(false); // <<< THIS LINE IS CRITICAL!
+        setIsLoading(false);
       }
     }
     fetchData();
   }, [plant]);
-
-
 
   const categories = useMemo(() => [...new Set(forecastData.map(i => i.category))], [forecastData]);
   const suppliers = useMemo(() => [...new Set(forecastData.map(i => i.supplier))], [forecastData]);
@@ -112,43 +429,60 @@ export function ForecastTable({ plant }: { plant: string }) {
     if (weekNum >= 0) {
       const weekData = item.stockStatus.find(s => s.week === weekNum);
       if (!weekData) return "-";
-
-      switch (stockViewMode) {
-        case "open":
-          return Math.round(weekData.projectedStock);
-        case "forecast":
-          return weekData.forecastedDemand ?? "-";
-        case "remaining":
-          // ✅ For W0 and onward → Remaining = OpenStock - Forecasted Demand
-          const remaining = weekData.projectedStock - (weekData.forecastedDemand ?? 0);
-          return Math.round(remaining);
-        case "movement":
-          return "-";  // No movement for future weeks
-        default:
-          return "-";
-      }
+      return Math.round(weekData.projectedStock);
     } else {
       const hist = historicalData.find(
         h => String(h.material).trim() === String(item.sku).trim() && h.week === weekNum
       );
       if (!hist) return "-";
-
-      switch (stockViewMode) {
-        case "open":
-          return Math.round(hist.openingStock);
-        case "movement":
-          return `${hist.moveIn} ; ${hist.moveOut}`;
-        case "remaining":
-          return Math.round(hist.projectedStock - hist.moveOut);
-        case "forecast":
-          return "-";
-        default:
-          return "-";
-      }
+      return Math.round(hist.openingStock);
     }
   };
 
+  const getChartData = (item: InventoryItemWithForecast, type: "opening" | "change" | "remain") => {
+    return weeks.map(weekNum => {
+      const weekLabel = weekNum < 0 ? `W${weekNum}` : weekNum === 0 ? "Current" : `W+${weekNum}`;
+      let value = 0;
 
+      if (weekNum >= 0) {
+        const weekData = item.stockStatus.find(s => s.week === weekNum);
+        if (weekData) {
+          switch (type) {
+            case "opening":
+              value = weekData.projectedStock;
+              break;
+            case "change":
+              // For forecast weeks, show forecasted demand as positive value
+              value = weekData.forecastedDemand || 0;
+              break;
+            case "remain":
+              value = weekData.projectedStock - (weekData.forecastedDemand || 0);
+              break;
+          }
+        }
+      } else {
+        const hist = historicalData.find(
+          h => String(h.material).trim() === String(item.sku).trim() && h.week === weekNum
+        );
+        if (hist) {
+          switch (type) {
+            case "opening":
+              value = hist.openingStock;
+              break;
+            case "change":
+              // For historical weeks, show actual demand (moveOut) as positive value
+              value = hist.moveOut || 0;
+              break;
+            case "remain":
+              value = hist.openingStock + hist.change;
+              break;
+          }
+        }
+      }
+
+      return { week: weekLabel, value };
+    });
+  };
 
   if (isLoading) {
     return (
@@ -159,227 +493,296 @@ export function ForecastTable({ plant }: { plant: string }) {
   }
 
   return (
-  <>
-    {/* Top Control Bar */}
-    <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center">
-      <div>
-        <h3 className="text-xl font-semibold text-gray-900">8-Week Stock Forecast</h3>
-        <p className="text-sm text-gray-600 mt-1">
-          Showing {filteredInventory.length} of {forecastData.length} items
-        </p>
-      </div>
-      <div className="flex items-center space-x-2 mt-4 sm:mt-0">
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className={categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all" ? "bg-blue-50" : ""}
-            >
-              <Filter className="w-4 h-4 mr-1" /> Filter
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-80 p-4">
-            <FilterSelect label="Category" value={categoryFilter} setValue={setCategoryFilter} options={categories} />
-            <FilterSelect label="Status" value={statusFilter} setValue={setStatusFilter} options={["critical", "low", "okay"]} allOption />
-            <FilterSelect label="Supplier" value={supplierFilter} setValue={setSupplierFilter} options={suppliers} />
-            {(categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all") && (
-              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-xs mt-2">
-                <X className="w-3 h-3 mr-1" /> Clear Filters
-              </Button>
-            )}
-          </PopoverContent>
-        </Popover>
-        <Button variant="outline" size="sm" onClick={handleExport}>
-          <Download className="w-4 h-4 mr-1" /> Export
-        </Button>
-      </div>
-    </div>
-    {/* Forecast Table */}
-    <div className="overflow-x-auto">
-      <table className="w-full table-auto">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="w-6"></th> {/* Chevron column */}
-            <th className="px-4 py-2 text-left text-xs text-gray-500 uppercase">Item</th>
-            {weeks.map(week => (
-              <th
-                key={week}
-                className={
-                  "px-1 py-1 text-center text-xs text-gray-500 " +
-                  (week === 0 ? "font-bold text-gray-900" : "")
-                }
+    <div className="bg-white rounded-lg shadow-sm border">
+      {/* Top Control Bar */}
+      <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center">
+        <div>
+          <h3 className="text-xl font-semibold text-gray-900">8-Week Stock Forecast</h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Showing {filteredInventory.length} of {forecastData.length} items
+          </p>
+        </div>
+        <div className="flex items-center space-x-2 mt-4 sm:mt-0">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className={categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all" ? "bg-blue-50" : ""}
               >
-                {week < 0 ? `W${week}` : week === 0 ? "Current" : `W+${week}`}
-              </th>
-            ))}
-            <th className="px-3 py-2 text-right text-xs text-gray-500">Action</th>
-          </tr>
-        </thead>
-        <tbody className="bg-white">
-          {filteredInventory.map(item => {
-            // Get status for current week (week === 0)
-            const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
+                <Filter className="w-4 h-4 mr-1" /> Filter
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-4">
+              <FilterSelect label="Category" value={categoryFilter} setValue={setCategoryFilter} options={categories} />
+              <FilterSelect label="Status" value={statusFilter} setValue={setStatusFilter} options={["critical", "low", "okay"]} allOption />
+              <FilterSelect label="Supplier" value={supplierFilter} setValue={setSupplierFilter} options={suppliers} />
+              {(categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all") && (
+                <Button variant="ghost" size="sm" onClick={clearFilters} className="text-xs mt-2">
+                  <X className="w-3 h-3 mr-1" /> Clear Filters
+                </Button>
+              )}
+            </PopoverContent>
+          </Popover>
+          <Button variant="outline" size="sm" onClick={handleExport}>
+            <Download className="w-4 h-4 mr-1" /> Export
+          </Button>
+        </div>
+      </div>
 
-            return (
-              <React.Fragment key={item.id}>
-                {/* Main Row: Opening Stock only */}
-                <tr className="hover:bg-gray-50 border-b">
-                  {/* Chevron */}
-                  <td className="px-2 py-2 text-center align-middle">
-                    <button
-                      onClick={() => {
-                        setExpandedRows(prev =>
-                          prev.has(item.id)
-                            ? new Set([...prev].filter(id => id !== item.id))
-                            : new Set([...prev, item.id])
-                        );
-                      }}
-                      className="focus:outline-none"
-                      aria-label={expandedRows.has(item.id) ? "Collapse details" : "Expand details"}
-                    >
-                      {expandedRows.has(item.id) ? (
-                        <ChevronDown className="w-4 h-4" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4" />
-                      )}
-                    </button>
-                  </td>
-                  {/* Name & SKU, with Status Badge */}
-                  <td className="px-4 py-2 align-middle">
-                    <div className="flex items-center justify-between min-w-0">
-                      <span className="text-sm font-medium text-left block truncate max-w-[12rem]">
-                        {item.name}
-                      </span>
-                      <span className="ml-2 whitespace-nowrap">{currentStatus && getStatusBadge(currentStatus)}</span>
-                    </div>
-                    <div className="text-xs text-gray-500 text-left truncate">
-                      SKU: {item.sku}
-                      <span className="mx-2">|</span>
-                      Reorder Point: {item.reorderPoint}
-                    </div>
-                  </td>
-                  {/* Opening stock for all weeks */}
-                  {weeks.map(weekNum => (
-                    <td
-                      key={weekNum}
-                      className={
-                        "px-1 py-2 text-center" +
-                        (weekNum === 0 ? " font-bold text-gray-900" : "")
-                      }
-                    >
-                      {getDisplayValue(item, weekNum)}
+      {/* Forecast Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full table-auto">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="w-6"></th>
+              <th className="px-4 py-2 text-left text-xs text-gray-500 uppercase">Item</th>
+              {weeks.map(week => (
+                <th
+                  key={week}
+                  className={
+                    "px-1 py-1 text-center text-xs text-gray-500 " +
+                    (week === 0 ? "font-bold text-gray-900" : "")
+                  }
+                >
+                  {week < 0 ? `W${week}` : week === 0 ? "Current" : `W+${week}`}
+                </th>
+              ))}
+              <th className="px-3 py-2 text-right text-xs text-gray-500">Action</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            {filteredInventory.map(item => {
+              const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
+              const isExpanded = expandedRows.has(item.id);
+
+              return (
+                <React.Fragment key={item.id}>
+                  {/* Main Row - with visual connection indicator */}
+                  <tr className={`hover:bg-gray-50 border-b transition-colors duration-150 ${
+                    isExpanded ? 'bg-blue-50/30 border-blue-200' : ''
+                  }`}>
+                    <td className="px-2 py-2 text-center align-middle">
+                      <button
+                        onClick={() => {
+                          setExpandedRows(prev =>
+                            prev.has(item.id)
+                              ? new Set([...prev].filter(id => id !== item.id))
+                              : new Set([...prev, item.id])
+                          );
+                        }}
+                        className="focus:outline-none p-1 rounded hover:bg-gray-200 transition-colors"
+                        aria-label={isExpanded ? "Collapse details" : "Expand details"}
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="w-4 h-4 text-blue-600" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                      </button>
                     </td>
-                  ))}
-                  {/* Action */}
-                  <td className="px-3 py-2 text-right">
-                    <Button variant="outline" size="sm" onClick={() => handleOpenOrderPopup(item)}>
-                      Create Order
-                    </Button>
-                  </td>
-                </tr>
-                {/* Expanded Attribute Rows */}
-                {expandedRows.has(item.id) && (
-                  <>
-                    {/* Change [Forecast] */}
-                    <tr className="bg-gray-50 text-xs text-center">
-                      <td></td>
-                      <td className="font-semibold text-gray-600 text-right pr-3">
-                        Change [Forecast]
+                    <td className="px-4 py-2 align-middle">
+                      <div className="flex items-center justify-between min-w-0">
+                        <div className="flex items-center">
+                          {/* Visual connection indicator */}
+                          {isExpanded && (
+                            <div className="w-1 h-8 bg-blue-400 rounded-full mr-3 -ml-1"></div>
+                          )}
+                          <div>
+                            <span className="text-sm font-medium text-left block truncate max-w-[12rem]">
+                              {item.name}
+                            </span>
+                            <div className="text-xs text-gray-500 text-left truncate">
+                              SKU: {item.sku}
+                              <span className="mx-2">|</span>
+                              Reorder Point: {item.reorderPoint}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="ml-2 whitespace-nowrap">{currentStatus && getStatusBadge(currentStatus)}</span>
+                      </div>
+                    </td>
+                    {weeks.map(weekNum => (
+                      <td
+                        key={weekNum}
+                        className={
+                          "px-1 py-2 text-center" +
+                          (weekNum === 0 ? " font-bold text-gray-900" : "") +
+                          (isExpanded ? " bg-blue-50/20" : "")
+                        }
+                      >
+                        {getDisplayValue(item, weekNum)}
                       </td>
-                      {weeks.map(weekNum => {
-                        let value;
-                        if (weekNum < 0) {
-                          // Historical: +N for positive, N for negative/zero, "-" for missing
-                          const hist = historicalData.find(
-                            h => h.material.trim() === item.sku.trim() && h.week === weekNum
-                          );
-                          if (hist?.change === undefined || hist?.change === null) {
-                            value = "-";
-                          } else if (hist.change > 0) {
-                            value = `+${hist.change}`;
-                          } else {
-                            value = `${hist.change}`;
-                          }
-                        } else {
-                          // Forecast: Always show as [-N] (even if original is positive)
-                          const weekData = item.stockStatus.find(s => s.week === weekNum);
-                          if (
-                            weekData &&
-                            weekData.forecastedDemand !== undefined &&
-                            weekData.forecastedDemand !== null
-                          ) {
-                            const val = -Math.abs(weekData.forecastedDemand);
-                            value = `[${val}]`;
-                          } else {
-                            value = "-";
-                          }
-                        }
-                        return <td key={weekNum}>{value}</td>;
-                      })}
-                      <td></td>
-                    </tr>
-                    {/* Remain */}
-                   <tr className="bg-gray-50 text-xs text-center font-bold border-b rounded-b-xl">
-                      <td></td>
-                      <td className="font-semibold text-gray-600 text-right pr-3">Remain</td>
-                      {weeks.map(weekNum => {
-                        let value;
-                        if (weekNum < 0) {
-                          const hist = historicalData.find(
-                            h => h.material.trim() === item.sku.trim() && h.week === weekNum
-                          );
-                          value = hist ? Math.round(hist.openingStock + hist.change) : "-";
-                        } else {
-                          const weekData = item.stockStatus.find(s => s.week === weekNum);
-                          value = weekData
-                            ? Math.round(weekData.projectedStock - (weekData.forecastedDemand ?? 0))
-                            : "-";
-                        }
-                        return <td key={weekNum}>{value}</td>;
-                      })}
-                      <td></td>
-                    </tr>
-                  </>
-                )}
-              </React.Fragment>
-            );
+                    ))}
+                    <td className="px-3 py-2 text-right">
+                      <Button variant="outline" size="sm" onClick={() => handleOpenOrderPopup(item)}>
+                        Create Order
+                      </Button>
+                    </td>
+                  </tr>
 
-          })}
-        </tbody>
-      </table>
-    </div>
-    {/* Popup */}
-    {showOrderPopup && selectedItem && (
-      <OrderPopup item={selectedItem} onClose={() => setShowOrderPopup(false)} />
-    )}
-  </>
-  );
-}
+                  {/* Expanded Rows */}
+                  {isExpanded && (
+                    <>
+                      {/* Demand Row - Updated to show actual demand */}
+                      <tr className="bg-blue-50/20 text-xs text-center border-l-4">
+                        <td className="px-2">
+                          <div className="w-4 h-4 border-l-2 ml-2"></div>
+                        </td>
+                        {/* Apply blue color to 'Forecast' in the header */}
+                        <td className="font-semibold text-gray-600 text-right pr-3">
+                          Demand [Actual/<span className="text-gray-400">Forecast</span>]
+                        </td>
+                        {weeks.map(weekNum => {
+                          let value;
+                          // Keep the existing cell background (bg-blue-50/20 from parent row)
+                          let cellClasses = "px-2 py-1"; // Base classes for all cells
 
-function FilterSelect({
-  label, value, setValue, options, allOption = true
-}: {
-  label: string;
-  value: string;
-  setValue: (val: string) => void;
-  options: string[];
-  allOption?: boolean;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium text-gray-700 block mb-2">{label}</label>
-      <Select value={value} onValueChange={setValue}>
-        <SelectTrigger className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {allOption && <SelectItem value="all">All</SelectItem>}
-          {options.map(option => (
-            <SelectItem key={option} value={option}>{option}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+                          if (weekNum < 0) {
+                            // Historical weeks - show actual demand (moveOut)
+                            const hist = historicalData.find(
+                              h => h.material.trim() === item.sku.trim() && h.week === weekNum
+                            );
+                            value = hist?.moveOut !== undefined ? hist.moveOut : "-";
+                            // No specific text color class here, will inherit default gray
+                          } else {
+                            // Forecast weeks - show forecasted demand
+                            const weekData = item.stockStatus.find(s => s.week === weekNum);
+                            if (
+                              weekData &&
+                              weekData.forecastedDemand !== undefined &&
+                              weekData.forecastedDemand !== null
+                            ) {
+                              value = weekData.forecastedDemand;
+                            } else {
+                              value = "-";
+                            }
+                            // Apply blue text color for forecasted numbers
+                            cellClasses += " text-gray-400 font-semibold"; // Blue text, slightly bolded for emphasis
+                          }
+                          return <td key={weekNum} className={cellClasses}>{value}</td>;
+                        })}
+                      </tr>
+
+                      {/* Remain Row */}
+                      <tr className="bg-blue-50/20 text-xs text-center font-bold border-l-4 border-blue-400">
+                        <td className="px-2">
+                          <div className="w-4 h-4 border-l-2 border-blue-400 ml-2"></div>
+                        </td>
+                        <td className="font-semibold text-gray-600 text-right pr-3">Remain</td>
+                        {weeks.map(weekNum => {
+                          let value;
+                          if (weekNum < 0) {
+                            const hist = historicalData.find(
+                              h => h.material.trim() === item.sku.trim() && h.week === weekNum
+                            );
+                            value = hist ? Math.round(hist.openingStock + hist.change) : "-";
+                          } else {
+                            const weekData = item.stockStatus.find(s => s.week === weekNum);
+                            value = weekData
+                              ? Math.round(weekData.projectedStock - (weekData.forecastedDemand ?? 0))
+                              : "-";
+                          }
+                          return <td key={weekNum} className="bg-blue-50/20">{value}</td>;
+                        })}
+                        <td></td>
+                      </tr>
+
+                      {/* Charts Row - Side by side layout */}
+                      <tr className="bg-white border-l-4 border-blue-400">
+                        <td className="px-2 py-4">
+                          <div className="w-4 h-full border-l-2 border-blue-400 ml-2"></div>
+                        </td>
+                        <td colSpan={weeks.length + 2} className="p-4 pl-2">
+                          <div className="space-y-4">
+                            {/* Chart Toggle Buttons - updated labels */}
+                            <div className="flex justify-center gap-2 mb-4">
+                              {[
+                                { key: "opening", label: "Opening Stock" },
+                                { key: "change", label: "Demand" },
+                                { key: "remain", label: "Remaining Stock" }
+                              ].map(({ key, label }) => (
+                                <button
+                                  key={key}
+                                  onClick={() => toggleChart(item.id, key)}
+                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
+                                    expandedCharts[item.id]?.[key]
+                                      ? 'bg-blue-600 text-white shadow-md'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Charts displayed side by side */}
+                            {(() => {
+                              const activeCharts = [];
+                              if (expandedCharts[item.id]?.opening) {
+                                activeCharts.push(
+                                  <IntegratedStockChart
+                                    key="opening"
+                                    title="Opening Stock"
+                                    reorderPoint={item.reorderPoint}
+                                    data={getChartData(item, "opening")}
+                                    chartType="opening"
+                                    isConnected={true}
+                                  />
+                                );
+                              }
+                              if (expandedCharts[item.id]?.change) {
+                                activeCharts.push(
+                                  <IntegratedStockChart
+                                    key="change"
+                                    title="Demand (Actual/Forecast)"
+                                    data={getChartData(item, "change")}
+                                    chartType="change"
+                                    isConnected={true}
+                                  />
+                                );
+                              }
+                              if (expandedCharts[item.id]?.remain) {
+                                activeCharts.push(
+                                  <IntegratedStockChart
+                                    key="remain"
+                                    title="Remaining Stock"
+                                    reorderPoint={item.reorderPoint}
+                                    data={getChartData(item, "remain")}
+                                    chartType="remain"
+                                    isConnected={true}
+                                  />
+                                );
+                              }
+
+                              if (activeCharts.length === 0) return null;
+
+                              return (
+                                <div className={`grid gap-4 ${
+                                  activeCharts.length === 1 ? 'grid-cols-1' :
+                                  activeCharts.length === 2 ? 'grid-cols-1 lg:grid-cols-2' :
+                                  'grid-cols-1 lg:grid-cols-2 xl:grid-cols-3'
+                                }`}>
+                                  {activeCharts}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </td>
+                      </tr>
+                    </>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Order Popup */}
+      {showOrderPopup && selectedItem && (
+        <OrderPopup item={selectedItem} onClose={() => setShowOrderPopup(false)} />
+      )}
     </div>
   );
 }

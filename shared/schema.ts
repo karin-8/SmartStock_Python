@@ -78,3 +78,13 @@ export type DashboardMetrics = {
   turnoverRate: number;
   stockoutFrequency: number;
 };
+
+export type HistoricalStockItem = {
+  material: string;
+  week: number;
+  openingStock: number;
+  closingStock: number;
+  change: number;
+  moveIn: number;
+  moveOut: number;
+};
