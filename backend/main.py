@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import FastAPI, HTTPException, APIRouter, Body
 from fastapi import Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional, Dict
 from datetime import datetime, timedelta
 import asyncpg
 import os
 from dotenv import load_dotenv
 from collections import defaultdict
+import httpx # Ensure httpx is imported
 
 # Assume: result = [{material, week, openingStock, closingStock, change}, ...]
 
@@ -46,18 +47,56 @@ def backfill_opening_stock(result, weeks=[-4, -3, -2, -1]):
 
     # For each material, work backwards to fill openingStock
     for material, week_dict in hist.items():
-        # Find first week with nonzero opening (start from latest towards earliest)
-        prev_open = None
-        for week in sorted(weeks, reverse=True):  # W-1, W-2, ...
+        # Find the latest available closing stock
+        latest_closing = None
+        for week in sorted(weeks, reverse=True):
             row = week_dict.get(week)
-            if row is None:
+            if row and row.get("closingStock") is not None:
+                latest_closing = row["closingStock"]
+                break
+
+        # Now, iterate backwards and backfill
+        for i in range(len(weeks) - 1, -1, -1):
+            current_week = weeks[i]
+            prev_week = weeks[i-1] if i > 0 else None
+
+            current_row = week_dict.get(current_week)
+            if current_row is None:
                 continue
-            if row.get("openingStock", 0) != 0:  # Already filled
-                prev_open = row["openingStock"]
-            elif prev_open is not None and "change" in row:
-                # Backfill opening
-                row["openingStock"] = prev_open - row["change"]
-                prev_open = row["openingStock"]
+
+            # If openingStock is None, try to derive it
+            if current_row["openingStock"] is None:
+                # If we have a closing stock for the current week,
+                # and a change for the current week,
+                # opening stock = closing stock - change
+                if current_row.get("closingStock") is not None and current_row.get("change") is not None:
+                    current_row["openingStock"] = current_row["closingStock"] - current_row["change"]
+                # If we have the closing stock from the *previous* week (which would be this week's opening stock)
+                elif prev_week is not None:
+                    prev_row = week_dict.get(prev_week)
+                    if prev_row and prev_row.get("closingStock") is not None:
+                        current_row["openingStock"] = prev_row["closingStock"]
+                # If all else fails, and we have a `latest_closing` from somewhere, use it as a fallback for the earliest missing opening stock
+                elif latest_closing is not None:
+                    current_row["openingStock"] = latest_closing
+                    # If this is the *earliest* week and openingStock is still None, use latest_closing
+                    if current_week == weeks[0]:
+                        current_row["openingStock"] = latest_closing
+
+
+            # Ensure closingStock is also filled if it's None and we have openingStock and change
+            if current_row["closingStock"] is None and \
+               current_row.get("openingStock") is not None and \
+               current_row.get("change") is not None:
+                current_row["closingStock"] = current_row["openingStock"] + current_row["change"]
+            
+            # If after all logic, openingStock or closingStock is still None, default to 0
+            if current_row["openingStock"] is None:
+                current_row["openingStock"] = 0
+            if current_row["closingStock"] is None:
+                current_row["closingStock"] = 0
+
+
     # Flatten back to list
     return [row for mat in hist.values() for row in mat.values()]
 
@@ -89,6 +128,20 @@ async def get_db_connection():
     except Exception as e:
         print(f"Database connection failed: {e}")
         raise HTTPException(status_code=500, detail="Database connection error.")
+    
+# --- Define DC SKUs ---
+dc_skus_master = {
+    '91KA': [
+        "1000065506", "1000065505", "901510015", "11620697", "18210013",
+        "18210062", "18315580", "908180887", "1000376114", "20191466",
+        "904115549", "11552056", "20250056", "11141223", "12114732",
+        "1000957649", "1000036673", "904720009", "11216868",
+        "904721296", "11213204", "904119996", "1000957648", "1000074851"
+    ],
+    '92KA': [
+        "926093930", "26035352", "26033852", "1000023811"
+    ]
+}
 
 # --- Models ---
 
@@ -109,6 +162,7 @@ class InventoryItemWithForecast(BaseModel):
     reorderPoint: int
     category: str
     supplier: str
+    leadTimeDays: Optional[int] = None # Added lead_time_days
     stockStatus: List[StockStatus]
 
 class Order(BaseModel):
@@ -229,8 +283,8 @@ async def get_historical_stock(plant: str = Query("15KA")):
             SELECT
                 *,
                 LAG(closing_stock) OVER (
-                  PARTITION BY material, plant
-                  ORDER BY iso_year, iso_week
+                    PARTITION BY material, plant
+                    ORDER BY iso_year, iso_week
                 ) AS opening_stock
             FROM merged
         ),
@@ -293,11 +347,24 @@ async def get_historical_stock(plant: str = Query("15KA")):
             rel_week = week_lookup.get((iso_year, iso_week), None)
             if rel_week is None:
                 continue
+            if plant in ['91KA', '92KA'] and row["material"].strip() not in dc_skus_master[plant]:
+                continue
+            elif plant in ['91KA', '92KA']:
+                result.append({
+                    "material": row["material"].strip(),
+                    "week": rel_week,
+                    "openingStock": int(row["opening_stock"]) if row["opening_stock"] is not None else None, # Set to None for backfilling
+                    "closingStock": int(row["closing_stock"]) if row["closing_stock"] is not None else None, # Set to None for backfilling
+                    "change": int(row["change"]) if row["change"] is not None else 0,
+                    "moveIn": int(row["move_in"]) if row["move_in"] is not None else 0,
+                    "moveOut": int(row["move_out"]) if row["move_out"] is not None else 0,
+                })
+                continue
             result.append({
                 "material": row["material"].strip(),
                 "week": rel_week,
-                "openingStock": int(row["opening_stock"]) if row["opening_stock"] is not None else 0,
-                "closingStock": int(row["closing_stock"]) if row["closing_stock"] is not None else 0,
+                "openingStock": int(row["opening_stock"]) if row["opening_stock"] is not None else None, # Set to None for backfilling
+                "closingStock": int(row["closing_stock"]) if row["closing_stock"] is not None else None, # Set to None for backfilling
                 "change": int(row["change"]) if row["change"] is not None else 0,
                 "moveIn": int(row["move_in"]) if row["move_in"] is not None else 0,
                 "moveOut": int(row["move_out"]) if row["move_out"] is not None else 0,
@@ -315,71 +382,54 @@ async def get_historical_stock(plant: str = Query("15KA")):
         await conn.close()
 
 
-
-from fastapi import APIRouter, Query, HTTPException
-from typing import Dict
-
 @app.get("/api/dashboard/metrics")
 async def get_dashboard_metrics(plant: str = Query("15KA")) -> Dict:
-    conn = await get_db_connection()
+    # Call the forecast API internally to get aligned data
     try:
-        # 1. Get unique SKUs from historical stock for this plant
-        sku_rows = await conn.fetch("""
-            SELECT DISTINCT TRIM(material) AS sku
-            FROM themall_poc.app_historical_stock
-            WHERE plnt = $1
-        """, plant)
-        sku_list = [row["sku"] for row in sku_rows]
+        # Use httpx to make an internal HTTP request to the /api/forecast endpoint
+        # This ensures the metrics are derived from the same logic and data as the forecast table
+        async with httpx.AsyncClient() as client:
+            forecast_response = await client.get(f"http://localhost:8000/api/forecast?plant={plant}")
+            forecast_response.raise_for_status() # Raise an exception for bad status codes
+            forecast_data: List[InventoryItemWithForecast] = forecast_response.json()
 
-        if not sku_list:
-            return {
-                "totalItems": 0,
-                "lowStockItems": 0,
-                "urgentItems": 0,
-                "pendingOrders": 12  # Hardcoded for now
-            }
+        total_items = len(forecast_data)
+        low_stock_items = 0
+        urgent_items = 0
 
-        # 2. For these SKUs, get current_stock and reorder_point
-        inv_rows = await conn.fetch("""
-            SELECT sku, current_stock, reorder_point
-            FROM themall_poc.app_inventory_items_cal
-            WHERE TRIM(sku) = ANY($1::text[]) AND plant = $2
-        """, sku_list, plant)
+        for item in forecast_data:
+            # Get the status for the current week (week 0)
+            current_week_status = next(
+                (s['status'] for s in item['stockStatus'] if s['week'] == 0),
+                "okay" # Default to 'okay' if status for week 0 is missing
+            )
 
-        low_stock = 0
-        urgent = 0
-
-        for row in inv_rows:
-            stock = row["current_stock"] or 0
-            rop = row["reorder_point"] or 0
-
-            if stock <= rop * 1.5:
-                low_stock += 1
-            if stock <= rop:
-                urgent += 1
+            if current_week_status == "critical":
+                urgent_items += 1
+                low_stock_items += 1 # Critical items are also considered low stock
+            elif current_week_status == "low":
+                low_stock_items += 1
 
         return {
-            "totalItems": len(sku_list),
-            "lowStockItems": low_stock,
-            "urgentItems": urgent,
-            "pendingOrders": 12
+            "totalItems": total_items,
+            "lowStockItems": low_stock_items,
+            "urgentItems": urgent_items,
+            "pendingOrders": 12 # This remains hardcoded as it's not derived from forecast
         }
 
+    except httpx.HTTPStatusError as e:
+        print(f"Error calling /api/forecast from /api/dashboard/metrics: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=500, detail=f"Error fetching forecast data for metrics: {e.response.text}")
     except Exception as e:
         print(f"Dashboard Metrics Error: {e}")
         raise HTTPException(status_code=500, detail="Error calculating dashboard metrics")
-    finally:
-        await conn.close()
 
-
-import httpx
-from fastapi import Query, HTTPException
-from typing import List
 
 @app.get("/api/forecast", response_model=List[InventoryItemWithForecast])
 async def get_forecast(plant: str = Query("15KA")):
     import datetime as dt
     from datetime import datetime
+    import httpx # Import httpx for making HTTP requests
 
     conn = await get_db_connection()
     try:
@@ -406,12 +456,23 @@ async def get_forecast(plant: str = Query("15KA")):
         w_minus_1_year, w_minus_1_week = week_map[-1]
 
         # --- Get SKUs & metadata ---
-        sku_query = """
-            SELECT DISTINCT material AS sku, item_desc
-            FROM themall_poc.final_order_table
-            WHERE plnt = $1
-        """
-        sku_rows = await conn.fetch(sku_query, plant)
+        if plant in ['91KA', '92KA']:
+            skus_for_plant = dc_skus_master.get(plant, [])
+            # For plants 91KA and 92KA, we use a different query
+            sku_query = """
+                SELECT DISTINCT material AS sku, item_desc
+                FROM themall_poc.final_order_table
+                WHERE material = ANY($1::text[])
+            """
+            sku_rows = await conn.fetch(sku_query, skus_for_plant)
+            print(sku_rows, "sku rows for 91KA/92KA")
+        else:
+            sku_query = """
+                SELECT DISTINCT material AS sku, item_desc
+                FROM themall_poc.final_order_table
+                WHERE plnt = $1
+            """
+            sku_rows = await conn.fetch(sku_query, plant)
         unique_skus = {}
         for row in sku_rows:
             sku = row["sku"].strip()
@@ -422,16 +483,16 @@ async def get_forecast(plant: str = Query("15KA")):
 
 
         stock_query = """
-            SELECT sku, reorder_point, category, supplier
+            SELECT sku, reorder_point, category, supplier, lead_time_days
             FROM themall_poc.app_inventory_items_cal
-            WHERE plant = $1
         """
-        stock_rows = await conn.fetch(stock_query, plant)
+        stock_rows = await conn.fetch(stock_query)
         stock_map = {
             row["sku"].strip(): {
-                "reorder_point": row["reorder_point"],
+                "reorder_point": row["reorder_point"]*11 if plant in ['91KA', '92KA'] else row["reorder_point"],
                 "category": row["category"].strip(),
                 "supplier": row["supplier"].strip(),
+                "lead_time_days": row["lead_time_days"], # Added lead_time_days
             }
             for row in stock_rows
         }
@@ -440,13 +501,40 @@ async def get_forecast(plant: str = Query("15KA")):
         all_weeks = [(year, week) for _, (year, week) in week_map.items()]
         year_list = [year for year, week in all_weeks]
         week_list = [week for year, week in all_weeks]
-        demand_query = """
-            SELECT material, iso_year, iso_week, pred_order_qty
-            FROM themall_poc.final_order_table
-            WHERE plnt = $3
-              AND (iso_year, iso_week) IN (SELECT UNNEST($1::int[]), UNNEST($2::int[]))
-        """
-        demand_rows = await conn.fetch(demand_query, year_list, week_list, plant)
+
+        # Conditional demand query based on plant
+        if plant in ['91KA', '92KA']:
+            # Get the list of SKUs based on the 'plant' variable
+            skus_for_plant = dc_skus_master.get(plant, [])
+            
+            # If there are no SKUs for the given plant, we might want to skip the query or handle it
+            if not skus_for_plant:
+                print(f"No SKUs found for plant {plant}. Skipping demand query.")
+                demand_rows = [] # Or handle as appropriate, e.g., continue, raise error
+            else:
+                # Convert the list of SKUs to a format suitable for a SQL IN clause
+                # For psycopg2/asyncpg, passing a list directly to IN works, but it's good practice
+                # to explicitly cast it if needed, or rely on the driver's parameter handling.
+                # Here, we'll pass it as a parameter, assuming the driver handles list-to-array conversion.
+                
+                demand_query = """
+                    SELECT material, iso_year, iso_week, SUM(pred_order_qty) AS pred_order_qty
+                    FROM themall_poc.final_order_table
+                    WHERE (iso_year, iso_week) IN (SELECT UNNEST($1::int[]), UNNEST($2::int[]))
+                    AND material = ANY($3::text[])  -- Add this line to filter by material
+                    GROUP BY material, iso_year, iso_week
+                """
+                demand_rows = await conn.fetch(demand_query, year_list, week_list, skus_for_plant)
+                print(demand_rows, "demand rows fetched")
+        else:
+            demand_query = """
+                SELECT material, iso_year, iso_week, pred_order_qty
+                FROM themall_poc.final_order_table
+                WHERE plnt = $3
+                  AND (iso_year, iso_week) IN (SELECT UNNEST($1::int[]), UNNEST($2::int[]))
+            """
+            demand_rows = await conn.fetch(demand_query, year_list, week_list, plant)
+
         demand_lookup = {}
         for row in demand_rows:
             key = (row["material"].strip(), row["iso_year"], row["iso_week"])
@@ -456,6 +544,7 @@ async def get_forecast(plant: str = Query("15KA")):
         async with httpx.AsyncClient() as client:
             hist_url = f"http://localhost:8000/api/historical-stock?plant={plant}"
             resp = await client.get(hist_url)
+            resp.raise_for_status() # Raise an exception for bad status codes
             hist_data = resp.json()
             # index by material, week
             hist_lookup = {}
@@ -467,6 +556,8 @@ async def get_forecast(plant: str = Query("15KA")):
         for idx, sku_info in enumerate(sku_list):
             sku = sku_info["sku"]
             name = sku_info["item_desc"]
+            if plant in ['91KA', '92KA'] and row["material"].strip() not in dc_skus_master[plant]:
+                continue
             stock_info = stock_map.get(sku)
             if not stock_info:
                 # Provide default values so processing continues
@@ -474,12 +565,14 @@ async def get_forecast(plant: str = Query("15KA")):
                     "reorder_point": 0,
                     "category": "",
                     "supplier": "",
+                    "lead_time_days": None, # Default for lead_time_days
                     "current_stock": 0
                 }
 
             reorder_point = int(stock_info["reorder_point"])
             category = stock_info["category"]
             supplier = stock_info["supplier"]
+            lead_time_days = stock_info["lead_time_days"] # Retrieve lead_time_days
 
             # Start from closing stock of W-1
             seed_stock = hist_lookup.get((sku, -1), 0)
@@ -526,19 +619,20 @@ async def get_forecast(plant: str = Query("15KA")):
                 reorderPoint=reorder_point or 0,
                 category=category,
                 supplier=supplier,
+                leadTimeDays=lead_time_days, # Pass lead_time_days here
                 stockStatus=stock_status_list,
             ))
 
         return forecast_results
 
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error fetching historical stock: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=500, detail=f"Error fetching historical stock data: {e.response.text}")
     except Exception as e:
         print(f"Forecast error: {e}")
         raise HTTPException(status_code=500, detail="Error generating forecast")
     finally:
         await conn.close()
-
-
-
 
 
 
@@ -581,8 +675,6 @@ async def get_orders(plant: str = Query("15KA")):
         await conn.close()
 
 
-
-
 @app.put("/api/orders/{order_id}")
 async def update_order(order_id: int, order: OrderRequest):
     for idx, existing_order in enumerate(order_list):
@@ -605,7 +697,160 @@ async def delete_order(order_id: int):
 async def get_plants():
     conn = await get_db_connection()
     try:
-        rows = await conn.fetch("SELECT DISTINCT plant FROM themall_poc.app_inventory_items_cal")
-        return sorted([row['plant'] for row in rows])
+        # Fetch all plants directly from d_plant_master
+        rows = await conn.fetch("""
+            SELECT
+                plant AS plant_code,
+                plant_name_1 AS plant_name
+            FROM themall_poc.d_plant_master
+            ORDER BY plant_code
+        """)
+
+        # Return both plant code and name
+        return [
+            {
+                "code": row['plant_code'],
+                "name": row['plant_name'] if row['plant_name'] else row['plant_code']
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        print(f"Error fetching plants: {e}")
+        raise HTTPException(status_code=500, detail="Error fetching plant data")
+    finally:
+        await conn.close()
+
+        from fastapi import Body
+
+@app.post("/api/allocate")
+async def allocate_sku_demand(
+    skus: List[str] = Body(..., embed=True),  # expects { "skus": [ ... ] }
+    weeks: int = Query(2, ge=1, le=8)
+):
+    """
+    For each SKU, return total predicted demand per plant over the next {weeks} weeks.
+    """
+    conn = await get_db_connection()
+    try:
+        # Figure out which weeks to sum: week 0 and week 1 (or up to 'weeks')
+        # Calculate week/year pairs just like in /api/forecast
+        week_map_query = """
+            WITH week_series AS (
+                SELECT generate_series(0, $1-1) AS relative_week
+            ),
+            target_weeks AS (
+                SELECT
+                    (DATE '2024-12-23' + relative_week * INTERVAL '1 week') AS target_date,
+                    relative_week
+                FROM week_series
+            )
+            SELECT
+                relative_week,
+                EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
+                EXTRACT('week' FROM target_date)::INT AS iso_week
+            FROM target_weeks
+            ORDER BY relative_week;
+        """
+        week_rows = await conn.fetch(week_map_query, weeks)
+        week_pairs = [(row["iso_year"], row["iso_week"]) for row in week_rows]
+
+        # Unpack to separate lists for query
+        iso_years = [wp[0] for wp in week_pairs]
+        iso_weeks = [wp[1] for wp in week_pairs]
+
+        # Query for total demand per SKU per plant, summed over weeks
+        demand_query = """
+            SELECT material AS sku, plnt AS plant, SUM(pred_order_qty) AS total_demand
+            FROM themall_poc.final_order_table
+            WHERE material = ANY($1::text[])
+              AND iso_year = ANY($2::int[])
+              AND iso_week = ANY($3::int[])
+            GROUP BY material, plnt
+            ORDER BY material, plnt;
+        """
+        rows = await conn.fetch(demand_query, skus, iso_years, iso_weeks)
+        
+        # Build a lookup: (sku, plant) -> demand
+        allocation_map = defaultdict(dict)
+        for row in rows:
+            allocation_map[row["sku"]][row["plant"]] = int(row["total_demand"] or 0)
+
+        # Compose result as list of dicts, as shown above
+        result = []
+        for sku in skus:
+            allocations = []
+            for plant, demand in allocation_map.get(sku, {}).items():
+                allocations.append({"plant": plant, "demand": demand})
+            result.append({"sku": sku, "allocations": allocations})
+
+        return result
+
+    except Exception as e:
+        print(f"Allocation API error: {e}")
+        raise HTTPException(status_code=500, detail="Error allocating SKU demand")
+    finally:
+        await conn.close()
+
+@app.get("/api/test-allocate")
+async def test_allocate():
+    """
+    Test the allocation endpoint with hardcoded dummy SKUs and weeks=2.
+    """
+    dummy_skus = ["1000065506", "901510015", "FAKE1234"]  # Add real & fake SKUs for fun
+    weeks = 2
+    conn = await get_db_connection()
+    try:
+        # --- Copy allocation logic ---
+        week_map_query = """
+            WITH week_series AS (
+                SELECT generate_series(0, $1-1) AS relative_week
+            ),
+            target_weeks AS (
+                SELECT
+                    (DATE '2024-12-23' + relative_week * INTERVAL '1 week') AS target_date,
+                    relative_week
+                FROM week_series
+            )
+            SELECT
+                relative_week,
+                EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
+                EXTRACT('week' FROM target_date)::INT AS iso_week
+            FROM target_weeks
+            ORDER BY relative_week;
+        """
+        week_rows = await conn.fetch(week_map_query, weeks)
+        week_pairs = [(row["iso_year"], row["iso_week"]) for row in week_rows]
+
+        iso_years = [wp[0] for wp in week_pairs]
+        iso_weeks = [wp[1] for wp in week_pairs]
+
+        demand_query = """
+            SELECT material AS sku, plnt AS plant, SUM(pred_order_qty) AS total_demand
+            FROM themall_poc.final_order_table
+            WHERE material = ANY($1::text[])
+              AND iso_year = ANY($2::int[])
+              AND iso_week = ANY($3::int[])
+            GROUP BY material, plnt
+            ORDER BY material, plnt;
+        """
+        rows = await conn.fetch(demand_query, dummy_skus, iso_years, iso_weeks)
+        
+        from collections import defaultdict
+        allocation_map = defaultdict(dict)
+        for row in rows:
+            allocation_map[row["sku"]][row["plant"]] = int(row["total_demand"] or 0)
+
+        result = []
+        for sku in dummy_skus:
+            allocations = []
+            for plant, demand in allocation_map.get(sku, {}).items():
+                allocations.append({"plant": plant, "demand": demand})
+            result.append({"sku": sku, "allocations": allocations})
+
+        return result
+
+    except Exception as e:
+        print(f"Test Allocate API error: {e}")
+        raise HTTPException(status_code=500, detail="Test allocate failed")
     finally:
         await conn.close()

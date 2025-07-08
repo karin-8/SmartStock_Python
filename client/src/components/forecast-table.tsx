@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react"; // Import useRef
 import { Filter, Download, X, Package, ChevronRight, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox"; // Import Checkbox
 import React from "react";
+import { AllocationTable } from "@/components/allocation-table"; // Import AllocationTable component
 import {
   LineChart,
   Line,
@@ -42,6 +44,8 @@ type StockChartProps = {
   chartType?: "opening" | "change" | "remain";
 };
 
+type Plant = { code: string; name: string };
+
 function getStatusBadge(status: "okay" | "low" | "critical") {
   const style = {
     okay: "bg-green-100 text-green-800",
@@ -57,43 +61,43 @@ function getStatusBadge(status: "okay" | "low" | "critical") {
   );
 }
 
-function IntegratedStockChart({ 
-  data, 
-  title, 
-  reorderPoint, 
+function IntegratedStockChart({
+  data,
+  title,
+  reorderPoint,
   chartType = "opening",
-  isConnected = false 
+  isConnected = false
 }: StockChartProps & { isConnected?: boolean }) {
-  
+
   // Calculate safety stock (10% of ROP, rounded up)
   const safetyStock = reorderPoint ? Math.ceil(reorderPoint * 0.1) : undefined;
-  
+
   // Calculate Y-axis domain to ensure ROP is visible
   const yAxisDomain = useMemo(() => {
     const values = data.map(d => d.value);
     const minValue = Math.min(...values);
     const maxValue = Math.max(...values);
-    
+
     let domainMin = minValue;
     let domainMax = maxValue;
-    
+
     // If we have reorderPoint and it's for opening/remain charts, ensure it's visible
     if (reorderPoint && (chartType === "opening" || chartType === "remain")) {
       domainMin = Math.min(domainMin, reorderPoint);
       domainMax = Math.max(domainMax, reorderPoint);
-      
+
       // Add some padding around the ROP
       const padding = Math.max(10, (domainMax - domainMin) * 0.1);
       domainMin = Math.max(0, domainMin - padding);
       domainMax = domainMax + padding;
     }
-    
+
     // If we have safety stock, ensure it's visible too
     if (safetyStock && (chartType === "opening" || chartType === "remain")) {
       domainMin = Math.min(domainMin, safetyStock);
       domainMax = Math.max(domainMax, safetyStock);
     }
-    
+
     return [domainMin, domainMax];
   }, [data, reorderPoint, safetyStock, chartType]);
 
@@ -101,21 +105,21 @@ function IntegratedStockChart({
   const currentIndex = data.findIndex(d => d.week === 'Current');
   const forecastStartIndex = currentIndex >= 0 ? currentIndex : data.findIndex(d => d.week.includes('W+'));
   const lastIndex = data.length - 1;
-  
+
   // Custom tooltip for better annotations
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       const value = payload[0].value;
       const isHistorical = label.includes('W-');
       const isCurrentWeek = label === 'Current';
-      
+
       return (
         <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
           <p className="font-semibold text-gray-800">{label}</p>
           <p className="text-blue-600">
             {title}: <span className="font-bold">
-              {chartType === "change" ? 
-                Math.round(value) : 
+              {chartType === "change" ?
+                Math.round(value) :
                 Math.round(value)
               }
             </span>
@@ -156,14 +160,14 @@ function IntegratedStockChart({
 
 
   // Find critical points for annotations
-  const criticalPoints = data.filter(point => 
+  const criticalPoints = data.filter(point =>
     reorderPoint && point.value <= reorderPoint
   );
 
   return (
     <div className={`p-4 rounded-lg transition-all duration-200 ${
-      isConnected 
-        ? 'bg-blue-50 border-l-4 border-blue-400 ml-4 mr-2' 
+      isConnected
+        ? 'bg-blue-50 border-l-4 border-blue-400 ml-4 mr-2'
         : 'bg-gray-50'
     }`}>
       <h4 className="font-semibold text-sm mb-2 flex items-center justify-between">
@@ -185,18 +189,18 @@ function IntegratedStockChart({
       <ResponsiveContainer width="100%" height={180}>
         <LineChart data={data} margin={{ top: 25, right: 30, left: 20, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-          <XAxis 
-            dataKey="week" 
+          <XAxis
+            dataKey="week"
             tick={{ fontSize: 11 }}
             tickLine={{ stroke: '#9ca3af' }}
           />
-          <YAxis 
+          <YAxis
             tick={{ fontSize: 11 }}
             tickLine={{ stroke: '#9ca3af' }}
             domain={yAxisDomain}
           />
           <Tooltip content={<CustomTooltip />} />
-          
+
           {/* Yellow shading for forecast area */}
           {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
             <ReferenceArea
@@ -207,25 +211,25 @@ function IntegratedStockChart({
               stroke="none"
             />
           )}
-          
-          <Line 
-            type="monotone" 
-            dataKey="value" 
-            stroke={lineColor} 
+
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={lineColor}
             // Use dynamic lineColor
             strokeWidth={isConnected ? 3 : 2}
             dot={{ fill: lineColor, r: 4 }}
             activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
           >
             {/* Add value labels on all data points */}
-            <LabelList 
-              dataKey="value" 
-              position="top" 
+            <LabelList
+              dataKey="value"
+              position="top"
               style={{ fontSize: '10px', fill: '#374151', fontWeight: 'bold' }}
               formatter={formatDataLabel}
             />
           </Line>
-          
+
           {/* Reorder Point Reference Line */}
           {reorderPoint && (
             <ReferenceLine
@@ -250,7 +254,7 @@ function IntegratedStockChart({
               />
             </ReferenceLine>
           )}
-          
+
           {/* Safety Stock Reference Line */}
           {safetyStock !== undefined && (chartType === "opening" || chartType === "remain") && (
             <ReferenceLine
@@ -275,32 +279,32 @@ function IntegratedStockChart({
               />
             </ReferenceLine>
           )}
-          
+
           {/* Add vertical line to separate historical from forecast */}
-          <ReferenceLine 
-            x="Current" 
-            stroke="#f59e0b" 
-            strokeDasharray="2 2" 
+          <ReferenceLine
+            x="Current"
+            stroke="#f59e0b"
+            strokeDasharray="2 2"
             strokeWidth={1}
-            label={{ 
-              value: "Now", 
+            label={{
+              value: "Now",
               position: "top",
               style: { fontSize: '10px', fill: '#f59e0b' }
             }}
           />
-          
+
           {/* Add "Forecast" label in the middle of the shaded area */}
           {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
-            <ReferenceLine 
+            <ReferenceLine
               x={data[Math.floor((forecastStartIndex + lastIndex) / 2)].week}
               stroke="none"
-              label={{ 
-                value: "Forecast", 
+              label={{
+                value: "Forecast",
                 position: "center",
                 offset: 10,
-                style: { 
-                  fontSize: '12px', 
-                  fill: 'rgba(40, 36, 36)', 
+                style: {
+                  fontSize: '12px',
+                  fill: 'rgba(40, 36, 36)',
                   fontWeight: 'bold',
                   backgroundColor: 'rgba(255,255,255,0.8)',
                   padding: '2px 6px',
@@ -316,40 +320,123 @@ function IntegratedStockChart({
   );
 }
 
-function FilterSelect({
-  label, value, setValue, options, allOption = true
-}: {
+// New MultiSelectFilter Component
+interface MultiSelectFilterProps {
   label: string;
-  value: string;
-  setValue: (val: string) => void;
   options: string[];
-  allOption?: boolean;
-}) {
+  selectedValues: Set<string>;
+  onValuesChange: (newValues: Set<string>) => void;
+  displayValueMap?: { [key: string]: string }; // Optional map for display values
+}
+
+const MultiSelectFilter: React.FC<MultiSelectFilterProps> = ({
+  label,
+  options,
+  selectedValues,
+  onValuesChange,
+  displayValueMap = {},
+}) => {
+  // "All" is considered selected if the selectedValues set contains all options.
+  // If options is empty, "All" is also true (nothing to select, so everything is implicitly selected).
+  const isAllExplicitlySelected = options.length > 0 && selectedValues.size === options.length;
+  // Indeterminate state: some options are selected, but not all.
+  const isIndeterminate = selectedValues.size > 0 && selectedValues.size < options.length;
+
+  const handleCheckboxChange = (value: string, checked: boolean) => {
+    let newSet = new Set(selectedValues);
+
+    if (isAllExplicitlySelected && !checked) {
+      // If currently all are selected and user is unchecking one,
+      // start with all options and remove the unchecked one.
+      newSet = new Set(options);
+      newSet.delete(value);
+    } else if (checked) {
+      newSet.add(value);
+    } else {
+      newSet.delete(value);
+    }
+    onValuesChange(newSet);
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      onValuesChange(new Set(options)); // Explicitly select all options
+    } else {
+      onValuesChange(new Set()); // Explicitly deselect all options (empty set)
+    }
+  };
+
+  const displaySelected = useMemo(() => {
+    if (isAllExplicitlySelected) {
+      return "All";
+    }
+    if (selectedValues.size === 0) { // If nothing is selected
+      return "None";
+    }
+    if (selectedValues.size === 1) {
+      const val = Array.from(selectedValues)[0];
+      return displayValueMap[val] || val;
+    }
+    return `${selectedValues.size} selected`;
+  }, [selectedValues, isAllExplicitlySelected, displayValueMap]);
+
   return (
-    <div>
+    <div className="mb-4">
       <label className="text-sm font-medium text-gray-700 block mb-2">{label}</label>
-      <Select value={value} onValueChange={setValue}>
-        <SelectTrigger className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {allOption && <SelectItem value="all">All</SelectItem>}
-          {options.map(option => (
-            <SelectItem key={option} value={option}>{option}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="outline" className="w-full justify-between">
+            {displaySelected}
+            <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-60 p-2">
+          <div className="space-y-2">
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id={`select-all-${label}`}
+                checked={isAllExplicitlySelected}
+                onCheckedChange={handleSelectAll}
+                indeterminate={isIndeterminate} // Set indeterminate state
+              />
+              <label
+                htmlFor={`select-all-${label}`}
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                All
+              </label>
+            </div>
+            {options.map(option => (
+              <div key={option} className="flex items-center space-x-2">
+                <Checkbox
+                  id={`${label}-${option}`}
+                  checked={selectedValues.has(option)} // Check if this specific option is in the set
+                  onCheckedChange={(checked: boolean) => handleCheckboxChange(option, checked)}
+                />
+                <label
+                  htmlFor={`${label}-${option}`}
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                >
+                  {displayValueMap[option] || option}
+                </label>
+              </div>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   );
-}
+};
+
 
 export function ForecastTable({ plant }: { plant: string }) {
   const [forecastData, setForecastData] = useState<InventoryItemWithForecast[]>([]);
   const [historicalData, setHistoricalData] = useState<HistoricalStockItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [supplierFilter, setSupplierFilter] = useState("all");
+  // Changed filter states to Sets, initialized as empty
+  const [categoryFilter, setCategoryFilter] = useState<Set<string>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
+  const [supplierFilter, setSupplierFilter] = useState<Set<string>>(new Set());
   const [selectedItem, setSelectedItem] = useState<InventoryItemWithForecast | null>(null);
   const [showOrderPopup, setShowOrderPopup] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
@@ -357,7 +444,22 @@ export function ForecastTable({ plant }: { plant: string }) {
     opening: boolean;
     change: boolean;
     remain: boolean;
+    allocation?: boolean;
   }>>({});
+  const [allocationData, setAllocationData] = useState<Record<string, any>>({});
+  const [loadingAllocation, setLoadingAllocation] = useState<Record<string, boolean>>({});
+  const [plants, setPlants] = useState<Plant[]>([]);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/api/plants")
+      .then(res => res.json())
+      .then(setPlants)
+      .catch(() => setPlants([]));
+  }, []);
+
+  // Pagination states
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10); // You can adjust this value
 
   const weeks = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
 
@@ -375,6 +477,9 @@ export function ForecastTable({ plant }: { plant: string }) {
     setSelectedItem(item);
     setShowOrderPopup(true);
   };
+
+  // Use a ref to track if initial filters have been set
+  const isInitialFilterSetup = useRef(false);
 
   // Restore your original data fetching
   useEffect(() => {
@@ -402,25 +507,53 @@ export function ForecastTable({ plant }: { plant: string }) {
   const categories = useMemo(() => [...new Set(forecastData.map(i => i.category))], [forecastData]);
   const suppliers = useMemo(() => [...new Set(forecastData.map(i => i.supplier))], [forecastData]);
 
+  // Define status options and their display names (ordered)
+  const statusOptions = ["critical", "low", "okay"];
+  const statusDisplayMap = {
+    critical: "Must Order",
+    low: "Low",
+    okay: "Okay",
+  };
+
+  // Effect to set initial filters to "all selected" after data load
+  // This now runs only once
+  useEffect(() => {
+    if (forecastData.length > 0 && isLoading === false && !isInitialFilterSetup.current) {
+      setCategoryFilter(new Set(categories));
+      setStatusFilter(new Set(statusOptions));
+      setSupplierFilter(new Set(suppliers));
+      isInitialFilterSetup.current = true; // Mark as setup
+    }
+  }, [forecastData, isLoading, categories, suppliers, statusOptions]);
+
   const filteredInventory = useMemo(() => {
-    return forecastData.filter(item => {
-      const matchCategory = categoryFilter === "all" || item.category === categoryFilter;
-      const matchSupplier = supplierFilter === "all" || item.supplier === supplierFilter;
+    const filtered = forecastData.filter(item => {
       const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
 
-      let matchStatus = true;
-      if (statusFilter === "critical") matchStatus = currentStatus === "critical";
-      else if (statusFilter === "low") matchStatus = currentStatus === "low";
-      else if (statusFilter === "okay") matchStatus = currentStatus === "okay";
+      // Filtering logic: if a filter set is empty, it means "nothing is selected" for that filter
+      // The initial useEffect ensures they are all selected by default.
+      const matchCategory = categoryFilter.has(item.category);
+      const matchSupplier = supplierFilter.has(item.supplier);
+      const matchStatus = currentStatus && statusFilter.has(currentStatus);
+
+      // If ALL filter sets are empty, it means the user has explicitly deselected "All" from ALL filters
+      // (e.g., by clicking "Clear Filters" or unchecking "All" in each), so show nothing.
+      // This ensures the "Deselect All -> Show None" behavior.
+      if (categoryFilter.size === 0 && statusFilter.size === 0 && supplierFilter.size === 0) {
+          return false;
+      }
 
       return matchCategory && matchSupplier && matchStatus;
     });
+    // Reset page to 1 when filters change
+    setCurrentPage(1);
+    return filtered;
   }, [forecastData, categoryFilter, statusFilter, supplierFilter]);
 
   const clearFilters = () => {
-    setCategoryFilter("all");
-    setStatusFilter("all");
-    setSupplierFilter("all");
+    setCategoryFilter(new Set());
+    setStatusFilter(new Set());
+    setSupplierFilter(new Set());
   };
 
   const handleExport = () => exportInventorySummary(filteredInventory);
@@ -484,6 +617,20 @@ export function ForecastTable({ plant }: { plant: string }) {
     });
   };
 
+  // Pagination Logic
+  const totalPages = Math.ceil(filteredInventory.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const currentItems = filteredInventory.slice(startIndex, endIndex);
+
+  const goToNextPage = () => {
+    setCurrentPage(prevPage => Math.min(prevPage + 1, totalPages));
+  };
+
+  const goToPreviousPage = () => {
+    setCurrentPage(prevPage => Math.max(prevPage - 1, 1));
+  };
+
   if (isLoading) {
     return (
       <div className="p-6 space-y-4">
@@ -491,6 +638,7 @@ export function ForecastTable({ plant }: { plant: string }) {
       </div>
     );
   }
+
 
   return (
     <div className="bg-white rounded-lg shadow-sm border">
@@ -508,16 +656,37 @@ export function ForecastTable({ plant }: { plant: string }) {
               <Button
                 variant="outline"
                 size="sm"
-                className={categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all" ? "bg-blue-50" : ""}
+                className={
+                  categoryFilter.size < categories.length || statusFilter.size < statusOptions.length || supplierFilter.size < suppliers.length
+                    ? "bg-blue-50"
+                    : ""
+                }
               >
                 <Filter className="w-4 h-4 mr-1" /> Filter
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-80 p-4">
-              <FilterSelect label="Category" value={categoryFilter} setValue={setCategoryFilter} options={categories} />
-              <FilterSelect label="Status" value={statusFilter} setValue={setStatusFilter} options={["critical", "low", "okay"]} allOption />
-              <FilterSelect label="Supplier" value={supplierFilter} setValue={setSupplierFilter} options={suppliers} />
-              {(categoryFilter !== "all" || statusFilter !== "all" || supplierFilter !== "all") && (
+              {/* Reordered filters */}
+              <MultiSelectFilter
+                label="Status"
+                options={statusOptions}
+                selectedValues={statusFilter}
+                onValuesChange={setStatusFilter}
+                displayValueMap={statusDisplayMap}
+              />
+              <MultiSelectFilter
+                label="Category"
+                options={categories}
+                selectedValues={categoryFilter}
+                onValuesChange={setCategoryFilter}
+              />
+              <MultiSelectFilter
+                label="Supplier"
+                options={suppliers}
+                selectedValues={supplierFilter}
+                onValuesChange={setSupplierFilter}
+              />
+              {(categoryFilter.size > 0 || statusFilter.size > 0 || supplierFilter.size > 0) && (
                 <Button variant="ghost" size="sm" onClick={clearFilters} className="text-xs mt-2">
                   <X className="w-3 h-3 mr-1" /> Clear Filters
                 </Button>
@@ -552,7 +721,7 @@ export function ForecastTable({ plant }: { plant: string }) {
             </tr>
           </thead>
           <tbody className="bg-white">
-            {filteredInventory.map(item => {
+            {currentItems.map(item => { {/* Use currentItems for rendering */}
               const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
               const isExpanded = expandedRows.has(item.id);
 
@@ -662,6 +831,7 @@ export function ForecastTable({ plant }: { plant: string }) {
                           }
                           return <td key={weekNum} className={cellClasses}>{value}</td>;
                         })}
+                        <td></td>
                       </tr>
 
                       {/* Remain Row */}
@@ -704,9 +874,9 @@ export function ForecastTable({ plant }: { plant: string }) {
                               ].map(({ key, label }) => (
                                 <button
                                   key={key}
-                                  onClick={() => toggleChart(item.id, key)}
+                                  onClick={() => toggleChart(item.id, key as "opening" | "change" | "remain")}
                                   className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
-                                    expandedCharts[item.id]?.[key]
+                                    expandedCharts[item.id]?.[key as "opening" | "change" | "remain"]
                                       ? 'bg-blue-600 text-white shadow-md'
                                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                                   }`}
@@ -714,6 +884,50 @@ export function ForecastTable({ plant }: { plant: string }) {
                                   {label}
                                 </button>
                               ))}
+                              {["91KA", "92KA"].includes(plant) && (
+                                <button
+                                  key="allocation"
+                                  onClick={async () => {
+                                    setExpandedCharts(prev => ({
+                                      ...prev,
+                                      [item.id]: {
+                                        ...prev[item.id],
+                                        allocation: !prev[item.id]?.allocation,
+                                      },
+                                    }));
+                                    // Only fetch if not already fetched
+                                    if (!allocationData[item.sku] && !loadingAllocation[item.sku]) {
+                                      setLoadingAllocation(prev => ({ ...prev, [item.sku]: true }));
+                                      try {
+                                        const res = await fetch(
+                                          "http://localhost:8000/api/allocate?weeks=2",
+                                          {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ skus: [item.sku] }),
+                                          }
+                                        );
+                                        const json = await res.json();
+                                        setAllocationData(prev => ({
+                                          ...prev,
+                                          [item.sku]: json[0]?.allocations || [],
+                                        }));
+                                      } catch {
+                                        setAllocationData(prev => ({ ...prev, [item.sku]: [] }));
+                                      } finally {
+                                        setLoadingAllocation(prev => ({ ...prev, [item.sku]: false }));
+                                      }
+                                    }
+                                  }}
+                                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 ${
+                                    expandedCharts[item.id]?.allocation
+                                      ? 'bg-blue-600 text-white shadow-md'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }`}
+                                >
+                                  Allocation
+                                </button>
+                              )}
                             </div>
 
                             {/* Charts displayed side by side */}
@@ -754,7 +968,23 @@ export function ForecastTable({ plant }: { plant: string }) {
                                   />
                                 );
                               }
+                              // In the place you render all the charts:
+                              const isOnlyAllocation =
+                                !!expandedCharts[item.id]?.allocation &&
+                                !expandedCharts[item.id]?.opening &&
+                                !expandedCharts[item.id]?.change &&
+                                !expandedCharts[item.id]?.remain;
 
+                              if (expandedCharts[item.id]?.allocation) {
+                                activeCharts.push(
+                                  <AllocationTable
+                                    key="allocation"
+                                    allocations={allocationData[item.sku] || []}
+                                    plants={plants}
+                                    isSolo={isOnlyAllocation}
+                                  />
+                                );
+                              }
                               if (activeCharts.length === 0) return null;
 
                               return (
@@ -777,6 +1007,29 @@ export function ForecastTable({ plant }: { plant: string }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Pagination Controls */}
+      <div className="flex justify-between items-center px-6 py-4 border-t border-gray-200">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={goToPreviousPage}
+          disabled={currentPage === 1}
+        >
+          Previous
+        </Button>
+        <span className="text-sm text-gray-700">
+          Page {currentPage} of {totalPages}
+        </span>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={goToNextPage}
+          disabled={currentPage === totalPages}
+        >
+          Next
+        </Button>
       </div>
 
       {/* Order Popup */}

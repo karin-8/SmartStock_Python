@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { MetricsCards } from "@/components/metrics-cards";
 import { ForecastTable } from "@/components/forecast-table";
 import { AIInsights } from "@/components/ai-insights";
-import { StockChart } from "@/components/stock-chart";
 
 import { getMetrics, getForecast } from "@/lib/api";
 import { Link } from "wouter";
@@ -24,19 +23,26 @@ const formattedTime = now.toLocaleTimeString(undefined, {
   minute: '2-digit',
 });
 
+// Define an interface for your plant object for better type safety
+interface PlantOption {
+  code: string;
+  name: string;
+}
+
 export default function Dashboard() {
   // NEW: plant options, selected plant
-  const [plantOptions, setPlantOptions] = useState<string[]>([]);
-  const [selectedPlant, setSelectedPlant] = useState("15KA");
+  const [plantOptions, setPlantOptions] = useState<PlantOption[]>([]); // Change type to PlantOption[]
+  const [selectedPlant, setSelectedPlant] = useState("34KA");
 
   // Fetch plant options on mount
   useEffect(() => {
     fetch("http://localhost:8000/api/plants")
       .then(res => res.json())
-      .then(plants => {
+      .then((plants: PlantOption[]) => { // Type the incoming data
         setPlantOptions(plants);
+        // Ensure selectedPlant is still valid, default to first if not
         setSelectedPlant(current =>
-          plants.includes(current) ? current : (plants[0] ?? "")
+          plants.some(p => p.code === current) ? current : (plants[0]?.code ?? "")
         );
       });
   }, []);
@@ -140,7 +146,7 @@ export default function Dashboard() {
           </div>
           {/* NEW: Plant selector */}
           <div className="mb-6">
-            <label className="font-semibold mr-2">Plant:</label>
+            <label className="font-semibold mr-2">Branch:</label>
             <select
               className="border rounded px-2 py-1"
               value={selectedPlant}
@@ -148,8 +154,8 @@ export default function Dashboard() {
               disabled={plantOptions.length === 0}
             >
               {plantOptions.map((plant) => (
-                <option key={plant} value={plant}>
-                  {plant}
+                <option key={plant.code} value={plant.code}>
+                  {`${plant.name} (${plant.code})`}
                 </option>
               ))}
             </select>
@@ -163,7 +169,6 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           <AIInsights inventory={inventory} metrics={metrics} />
         </div>
-        <StockChart forecast={inventory} />
       </div>
     </div>
   );

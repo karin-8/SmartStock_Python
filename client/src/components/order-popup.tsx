@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { InventoryItemWithForecast } from "@shared/schema";
@@ -9,20 +9,52 @@ interface OrderPopupProps {
 }
 
 const OrderPopup: React.FC<OrderPopupProps> = ({ item, onClose }) => {
-  const stockAtW4 = item.stockStatus.find((s) => s.week === 4)?.projectedStock ?? 0;
-  const safetyStock = Math.ceil(item.reorderPoint * 0.1);
-  const targetStockAtW4 = safetyStock;
-
-  const gap = targetStockAtW4 - stockAtW4;
-  const recommendedQty = Math.max(0, gap);
-
-
-  const [quantity, setQuantity] = useState<number>(recommendedQty);
+  // Default to 4 weeks (approximately 1 month)
+  const [weeksToLast, setWeeksToLast] = useState<number>(2);
+  const [quantity, setQuantity] = useState<number>(0); // Holds the actual quantity in the input
+  const [isQuantityManuallyEdited, setIsQuantityManuallyEdited] = useState<boolean>(false); // Tracks if user manually edited quantity
   const [error, setError] = useState<string | null>(null);
+  const [weeksToLastError, setWeeksToLastError] = useState<string | null>(null);
+
+  // Calculate recommended quantity based on weeksToLast
+  const calculatedRecommendedQty = useMemo(() => {
+    const safetyStock = Math.ceil(item.reorderPoint * 0.1);
+    const currentStock = item.currentStock ?? 0;
+
+    if (weeksToLast <= 0 || isNaN(weeksToLast)) {
+      setWeeksToLastError("Weeks to last must be a positive number.");
+      return 0;
+    }
+    setWeeksToLastError(null);
+
+    let totalDemandInPeriod = 0;
+    for (let i = 0; i < weeksToLast; i++) {
+      const weekData = item.stockStatus.find(s => s.week === i);
+      if (weekData) {
+        totalDemandInPeriod += weekData.forecastedDemand ?? 0;
+      }
+    }
+
+    const totalNeeded = totalDemandInPeriod + safetyStock;
+    return Math.max(0, totalNeeded - currentStock);
+  }, [weeksToLast, item.stockStatus, item.currentStock, item.reorderPoint]);
+
+  // Effect to update quantity when calculatedRecommendedQty changes,
+  // but only if the user hasn't manually edited it.
+  useEffect(() => {
+    if (!isQuantityManuallyEdited) {
+      setQuantity(calculatedRecommendedQty);
+    }
+  }, [calculatedRecommendedQty, isQuantityManuallyEdited]);
+
 
   const handleSubmit = async () => {
     if (quantity <= 0 || isNaN(quantity)) {
-      setError("Quantity must be at least 1.");
+      setError("Order quantity must be at least 1.");
+      return;
+    }
+    if (weeksToLast <= 0 || isNaN(weeksToLast)) {
+      setWeeksToLastError("Weeks to last must be a positive number.");
       return;
     }
 
@@ -40,11 +72,23 @@ const OrderPopup: React.FC<OrderPopupProps> = ({ item, onClose }) => {
     onClose();
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleQuantityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newQty = Number(e.target.value);
     setQuantity(newQty);
+    setIsQuantityManuallyEdited(true); // Mark as manually edited
     if (newQty > 0) setError(null);
   };
+
+  const handleWeeksToLastChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newWeeks = Number(e.target.value);
+    setWeeksToLast(newWeeks);
+    // When weeksToLast changes, we want to reset manual edit flag
+    // so quantity updates to the new recommended value
+    setIsQuantityManuallyEdited(false);
+    if (newWeeks > 0) setWeeksToLastError(null);
+  };
+
+  // Removed handleIncrementWeeks and handleDecrementWeeks as they are no longer needed
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
@@ -68,28 +112,48 @@ const OrderPopup: React.FC<OrderPopupProps> = ({ item, onClose }) => {
             <div>{item.currentStock} units</div>
           </div>
 
+          {/* Added Lead Time (Days) here */}
           <div className="grid grid-cols-2 gap-x-2 py-1 bg-gray-50">
+            <div className="font-medium text-blue-800">Lead Time (Days):</div>
+            <div>{item.leadTimeDays !== null && item.leadTimeDays !== undefined ? item.leadTimeDays : 'N/A'}</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-x-2 py-1">
             <div className="font-medium text-blue-800">Reorder Point:</div>
             <div>{item.reorderPoint} units</div>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-2 py-1">
+          <div className="grid grid-cols-2 gap-x-2 py-1 bg-gray-50">
             <div className="font-medium text-blue-800">Safety Stock:</div>
-            <div>{safetyStock} units</div>
+            <div>{Math.ceil(item.reorderPoint * 0.1)} units</div>
+          </div>
+
+          {/* Input for Weeks to Last - now relying on native number input controls */}
+          <div className="grid grid-cols-2 gap-x-2 py-1">
+            <label htmlFor="weeksToLast" className="font-medium text-blue-800 self-center">Weeks to Last:</label>
+            <div>
+              <Input
+                id="weeksToLast"
+                type="number"
+                value={weeksToLast}
+                onChange={handleWeeksToLastChange}
+                min={1}
+                className="w-12 text-center" // Adjusted width, removed flex container
+              />
+            </div>
+            {weeksToLastError && <p className="text-red-600 text-xs mt-1 col-span-2">{weeksToLastError}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-x-2 py-1 bg-gray-50">
             <div className="font-medium text-blue-800">Suggested Order Qty:</div>
             <div>
-              {recommendedQty} units
-              <div className="text-xs text-gray-500">Enough for next 1 month (4 weeks)</div>
+              {calculatedRecommendedQty} units {/* Display the calculated recommended quantity */}
+              <div className="text-xs text-gray-500">
+                Enough for next {weeksToLast} week{weeksToLast === 1 ? '' : 's'}
+              </div>
             </div>
           </div>
         </div>
-
-
-
-
 
         {/* ✅ Divider */}
         <hr className="my-4 border-gray-300" />
@@ -99,10 +163,10 @@ const OrderPopup: React.FC<OrderPopupProps> = ({ item, onClose }) => {
           <label className="block text-sm font-medium">Order Quantity</label>
           <Input
             type="number"
-            value={quantity}
-            onChange={handleChange}
+            value={quantity} // This is the value that can be manually edited
+            onChange={handleQuantityChange}
             min={1}
-            placeholder={`Suggested: ${recommendedQty}`}
+            placeholder={`Suggested: ${calculatedRecommendedQty}`}
           />
           {error && <p className="text-red-600 text-sm mt-1">{error}</p>}
         </div>

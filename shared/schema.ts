@@ -88,3 +88,9 @@ export type HistoricalStockItem = {
   moveIn: number;
   moveOut: number;
 };
+
+
+export type PlantInfo = {
+  code: string;
+  name: string;
+};
