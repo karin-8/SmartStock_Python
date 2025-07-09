@@ -10,7 +10,7 @@ async def fetch_forecast_data(plant: str) -> list:
         res.raise_for_status()
         return res.json()
 
-def rolling_slope(values: list[float], window: int = 2) -> list[float]:
+def rolling_slope(values: list[float], window: int = 3) -> list[float]:
     slopes = []
     x = np.arange(window)
     for i in range(len(values) - window + 1):
@@ -28,12 +28,12 @@ async def generate_analytics(plant: str) -> dict:
 
     for item in forecast_data:
         sku = item.get("sku")
-        name = item.get("name")
+        name = item.get("name").replace("*", "×")
         status_list = sorted(item.get("stockStatus", []), key=lambda w: w["week"])
-        # print(status_list)
+        print(status_list)
 
-        demands = [week["forecastedDemand"] for week in status_list if 3 <= week['week'] < 6]
-        stocks = [week["projectedStock"] for week in status_list if 3 <= week['week'] < 6]
+        demands = [week["forecastedDemand"] for week in status_list if 0 <= week['week'] < 3]
+        stocks = [week["projectedStock"] for week in status_list if 0 <= week['week'] < 3]
 
         if len(demands) >= 3:
             demand_slopes.append({
