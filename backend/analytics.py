@@ -30,7 +30,7 @@ async def generate_analytics(plant: str) -> dict:
         sku = item.get("sku")
         name = item.get("name").replace("*", "×")
         status_list = sorted(item.get("stockStatus", []), key=lambda w: w["week"])
-        print(status_list)
+        # print(status_list)
 
         demands = [week["forecastedDemand"] for week in status_list if 0 <= week['week'] < 3]
         stocks = [week["projectedStock"] for week in status_list if 0 <= week['week'] < 3]

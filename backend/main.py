@@ -529,7 +529,7 @@ async def get_forecast(plant: str = Query("15KA")):
                     GROUP BY material, iso_year, iso_week
                 """
                 demand_rows = await conn.fetch(demand_query, year_list, week_list, skus_for_plant)
-                print(demand_rows, "demand rows fetched")
+                # print(demand_rows, "demand rows fetched")
         else:
             demand_query = """
                 SELECT material, iso_year, iso_week, pred_order_qty
@@ -740,7 +740,7 @@ async def allocate_sku_demand(
         # Calculate week/year pairs just like in /api/forecast
         week_map_query = """
             WITH week_series AS (
-                SELECT generate_series(0, $1-1) AS relative_week
+                SELECT generate_series(0, $1 - 1) AS relative_week
             ),
             target_weeks AS (
                 SELECT
@@ -749,7 +749,6 @@ async def allocate_sku_demand(
                 FROM week_series
             )
             SELECT
-                relative_week,
                 EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
                 EXTRACT('week' FROM target_date)::INT AS iso_week
             FROM target_weeks
@@ -757,22 +756,20 @@ async def allocate_sku_demand(
         """
         week_rows = await conn.fetch(week_map_query, weeks)
         week_pairs = [(row["iso_year"], row["iso_week"]) for row in week_rows]
+        iso_years, iso_weeks = zip(*week_pairs)
 
-        # Unpack to separate lists for query
-        iso_years = [wp[0] for wp in week_pairs]
-        iso_weeks = [wp[1] for wp in week_pairs]
-
-        # Query for total demand per SKU per plant, summed over weeks
         demand_query = """
-            SELECT material AS sku, plnt AS plant, SUM(pred_order_qty) AS total_demand
-            FROM themall_poc.final_order_table
-            WHERE material = ANY($1::text[])
-              AND iso_year = ANY($2::int[])
-              AND iso_week = ANY($3::int[])
-            GROUP BY material, plnt
-            ORDER BY material, plnt;
+            SELECT TRIM(material) AS sku, plnt AS plant, SUM(COALESCE(pred_order_qty, 0)) AS total_demand
+            FROM themall_poc.final_order_table f
+            JOIN (
+                SELECT * FROM UNNEST($2::int[], $3::int[]) AS t(iso_year, iso_week)
+            ) weeks ON f.iso_year = weeks.iso_year AND f.iso_week = weeks.iso_week
+            WHERE TRIM(material) = ANY($1::text[])
+            GROUP BY TRIM(material), plnt
+            ORDER BY TRIM(material), plnt;
         """
-        rows = await conn.fetch(demand_query, skus, iso_years, iso_weeks)
+        # print(demand_query, [s.strip() for s in skus], iso_years, iso_weeks)
+        rows = await conn.fetch(demand_query, [s.strip() for s in skus], iso_years, iso_weeks)
         
         # Build a lookup: (sku, plant) -> demand
         allocation_map = defaultdict(dict)
@@ -800,14 +797,14 @@ async def test_allocate():
     """
     Test the allocation endpoint with hardcoded dummy SKUs and weeks=2.
     """
-    dummy_skus = ["1000065506", "901510015", "FAKE1234"]  # Add real & fake SKUs for fun
+    dummy_skus = ["1000065506", "18210013", "901510015", "FAKE1234"]  # Add real & fake SKUs for fun
     weeks = 2
     conn = await get_db_connection()
     try:
         # --- Copy allocation logic ---
         week_map_query = """
             WITH week_series AS (
-                SELECT generate_series(0, $1-1) AS relative_week
+                SELECT generate_series(0, $1 - 1) AS relative_week
             ),
             target_weeks AS (
                 SELECT
@@ -816,7 +813,6 @@ async def test_allocate():
                 FROM week_series
             )
             SELECT
-                relative_week,
                 EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
                 EXTRACT('week' FROM target_date)::INT AS iso_week
             FROM target_weeks
@@ -824,20 +820,19 @@ async def test_allocate():
         """
         week_rows = await conn.fetch(week_map_query, weeks)
         week_pairs = [(row["iso_year"], row["iso_week"]) for row in week_rows]
-
-        iso_years = [wp[0] for wp in week_pairs]
-        iso_weeks = [wp[1] for wp in week_pairs]
+        iso_years, iso_weeks = zip(*week_pairs)
 
         demand_query = """
-            SELECT material AS sku, plnt AS plant, SUM(pred_order_qty) AS total_demand
-            FROM themall_poc.final_order_table
-            WHERE material = ANY($1::text[])
-              AND iso_year = ANY($2::int[])
-              AND iso_week = ANY($3::int[])
-            GROUP BY material, plnt
-            ORDER BY material, plnt;
+            SELECT TRIM(material) AS sku, plnt AS plant, SUM(COALESCE(pred_order_qty, 0)) AS total_demand
+            FROM themall_poc.final_order_table f
+            JOIN (
+                SELECT * FROM UNNEST($2::int[], $3::int[]) AS t(iso_year, iso_week)
+            ) weeks ON f.iso_year = weeks.iso_year AND f.iso_week = weeks.iso_week
+            WHERE TRIM(material) = ANY($1::text[])
+            GROUP BY TRIM(material), plnt
+            ORDER BY TRIM(material), plnt;
         """
-        rows = await conn.fetch(demand_query, dummy_skus, iso_years, iso_weeks)
+        rows = await conn.fetch(demand_query, [s.strip() for s in dummy_skus], iso_years, iso_weeks)
         
         from collections import defaultdict
         allocation_map = defaultdict(dict)

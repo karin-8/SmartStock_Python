@@ -162,18 +162,24 @@ return (
               ))}
             </select>
           </div>
+          {/* Render Metrics + AI Insight at Top */}
           <div className="flex flex-row flex-wrap sm:flex-nowrap gap-4 mb-6">
             <div className="w-full sm:w-1/2">
-              <MetricsCards metrics={metrics} isLoading={isLoading} />
+              {!inventoryLoading && (
+                <MetricsCards metrics={metrics} isLoading={metricsLoading} />
+              )}
             </div>
             <div className="w-full sm:w-1/2">
-              <AIInsights plant={selectedPlant} />
+              {!inventoryLoading && !metricsLoading && (
+                <AIInsights plant={selectedPlant} />
+              )}
             </div>
           </div>
-        {/* 7-Day Forecast Table */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
-          <ForecastTable plant={selectedPlant} inventory={inventory} isLoading={isLoading} />
-        </div>
+
+          {/* Forecast Table stays at bottom */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
+            <ForecastTable plant={selectedPlant} inventory={inventory} isLoading={inventoryLoading} />
+          </div>
       </div>
     </div>
   </div>

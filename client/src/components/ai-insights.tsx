@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -21,6 +20,40 @@ interface AiInsightResponse {
   raw_analytics: Analytics;
 }
 
+function useTypingLoop(text: string, speed = 100, delay = 800) {
+  const [displayed, setDisplayed] = useState("");
+
+  useEffect(() => {
+    let i = 0;
+    let isDeleting = false;
+    let timeout: NodeJS.Timeout;
+
+    const type = () => {
+      if (!isDeleting) {
+        setDisplayed(text.slice(0, i + 1));
+        i++;
+        if (i === text.length) {
+          isDeleting = true;
+          timeout = setTimeout(type, delay);
+          return;
+        }
+      } else {
+        setDisplayed(text.slice(0, i - 1));
+        i--;
+        if (i === 0) {
+          isDeleting = false;
+        }
+      }
+      timeout = setTimeout(type, speed);
+    };
+
+    timeout = setTimeout(type, speed);
+    return () => clearTimeout(timeout);
+  }, [text, speed, delay]);
+
+  return displayed;
+}
+
 export default function AIInsights({ plant }: { plant: string }) {
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<string | null>(null);
@@ -29,6 +62,8 @@ export default function AIInsights({ plant }: { plant: string }) {
   useEffect(() => {
     if (!plant) return;
     setLoading(true);
+    setExpanded(false);  // 💥 Reset state here
+
     fetch(`http://localhost:8000/api/ai-insight?plant=${plant}`)
       .then((res) => res.json())
       .then((data: AiInsightResponse) => {
@@ -43,6 +78,8 @@ export default function AIInsights({ plant }: { plant: string }) {
       });
   }, [plant]);
 
+  const typing = useTypingLoop("กำลังวิเคราะห์...", 80, 800);
+
   return (
     <Card className="transition-all duration-200 hover:shadow-md hover:border-blue-400">
       <CardHeader>
@@ -50,23 +87,16 @@ export default function AIInsights({ plant }: { plant: string }) {
       </CardHeader>
       <CardContent>
         {loading ? (
-          <>
-            <Skeleton className="h-20 w-full mb-2" />
-            <Skeleton className="h-20 w-full mb-2" />
-          </>
+          <p className="text-sm text-gray-500 italic">{typing}</p>
         ) : summary ? (
-          <div
-            className={`prose prose-sm max-w-none text-gray-800 ${
-              expanded ? "" : "line-clamp-4 overflow-hidden"
-            }`}
-            onClick={() => setExpanded(!expanded)}
-            style={{ cursor: "pointer" }}
-          >
-            <ReactMarkdown>{summary}</ReactMarkdown>
-            {!expanded && (
-              <span className="text-sm text-blue-600 underline ml-1">ดูเพิ่มเติม</span>
-            )}
-          </div>
+        <div
+          className={`prose prose-sm max-w-none text-gray-800 transition-all duration-300 ease-in-out cursor-pointer ${
+            expanded ? "" : "line-clamp-4"
+          }`}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <ReactMarkdown>{summary}</ReactMarkdown>
+        </div>
         ) : (
           <p className="text-sm text-muted-foreground">No insight available.</p>
         )}
