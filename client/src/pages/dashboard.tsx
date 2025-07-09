@@ -4,7 +4,8 @@ import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { MetricsCards } from "@/components/metrics-cards";
 import { ForecastTable } from "@/components/forecast-table";
-import { AIInsights } from "@/components/ai-insights";
+import AIInsights from "@/components/ai-insights"; // ✅ CORRECT
+
 
 import { getMetrics, getForecast } from "@/lib/api";
 import { Link } from "wouter";
@@ -80,7 +81,8 @@ export default function Dashboard() {
 
   const isLoading = metricsLoading || inventoryLoading;
 
-  return (
+  
+return (
     <div className="min-h-screen bg-gray-50 font-sans">
       {/* Header Navigation */}
       <header className="bg-white shadow-sm border-b border-gray-200">
@@ -89,7 +91,7 @@ export default function Dashboard() {
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">
                 <Boxes className="text-blue-600 text-2xl" />
-                <h1 className="text-2xl font-bold text-gray-900">SmartStock</h1>
+                <h1 className="text-2xl font-bold text-gray-900">Smart AI Stock</h1>
               </div>
               <nav className="hidden md:flex space-x-8">
                 <a href="#dashboard" className="text-blue-600 border-b-2 border-blue-600 font-medium py-2">
@@ -160,16 +162,20 @@ export default function Dashboard() {
               ))}
             </select>
           </div>
-          <MetricsCards metrics={metrics} isLoading={isLoading} />
-        </div>
+          <div className="flex flex-row flex-wrap sm:flex-nowrap gap-4 mb-6">
+            <div className="w-full sm:w-1/2">
+              <MetricsCards metrics={metrics} isLoading={isLoading} />
+            </div>
+            <div className="w-full sm:w-1/2">
+              <AIInsights plant={selectedPlant} />
+            </div>
+          </div>
         {/* 7-Day Forecast Table */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
           <ForecastTable plant={selectedPlant} inventory={inventory} isLoading={isLoading} />
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <AIInsights inventory={inventory} metrics={metrics} />
-        </div>
       </div>
     </div>
+  </div>
   );
 }

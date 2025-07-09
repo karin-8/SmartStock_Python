@@ -25,77 +25,61 @@ export function MetricsCards({ metrics, isLoading }: MetricsCardsProps) {
   if (!metrics) return null;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Total SKUs */}
-      <Card className="shadow-sm border border-gray-100">
-        <CardContent className="p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Total SKUs</p>
-              <p className="text-3xl font-bold text-gray-900">{metrics.totalItems}</p>
-            </div>
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-              <Package className="text-blue-600 text-xl" />
-            </div>
+      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Total SKUs</p>
+            <p className="text-2xl font-bold text-blue-600">{metrics.totalItems}</p>
           </div>
-          <div className="mt-4 flex items-center">
-            <span className="text-sm text-green-600 font-medium">+1 from last week</span>
+          <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+            <Package className="w-5 h-5 text-blue-600" />
           </div>
-        </CardContent>
+        </div>
+        <div className="mt-3 text-sm text-green-600">+1 from last week</div>
       </Card>
 
       {/* Low Stock SKUs */}
-      <Card className="shadow-sm border border-gray-100">
-        <CardContent className="p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Low Stock SKUs</p>
-              <p className="text-3xl font-bold text-yellow-600">{metrics.lowStockItems}</p>
-            </div>
-            <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-              <AlertTriangle className="text-red-600 text-xl" />
-            </div>
+      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Low Stock SKUs</p>
+            <p className="text-2xl font-bold text-red-600">{metrics.lowStockItems}</p>
           </div>
-          <div className="mt-4 flex items-center">
-            <span className="text-sm text-red-600 font-medium">Action required</span>
+          <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5 text-red-600" />
           </div>
-        </CardContent>
+        </div>
+        <div className="mt-3 text-sm text-red-600">Action required</div>
       </Card>
 
-      {/* Urgent SKUs */}
-      <Card className="shadow-sm border border-gray-100">
-        <CardContent className="p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Must-Order SKUs</p>
-              <p className="text-3xl font-bold text-red-600">{metrics.urgentItems}</p>
-            </div>
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-              <Flame className="text-orange-600 text-xl" />
-            </div>
+      {/* Must-Order SKUs */}
+      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Must-Order SKUs</p>
+            <p className="text-2xl font-bold text-orange-600">{metrics.urgentItems}</p>
           </div>
-          <div className="mt-4 flex items-center">
-            <span className="text-sm text-orange-600 font-medium">Immediate attention</span>
+          <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
+            <Flame className="w-5 h-5 text-orange-600" />
           </div>
-        </CardContent>
+        </div>
+        <div className="mt-3 text-sm text-orange-600 font-medium">Immediate attention</div>
       </Card>
 
       {/* Pending Orders */}
-      <Card className="shadow-sm border border-gray-100">
-        <CardContent className="p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-600">Pending Orders</p>
-              <p className="text-3xl font-bold text-orange-600">{metrics.pendingOrders}</p>
-            </div>
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-              <Clock className="text-orange-600 text-xl" />
-            </div>
+      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Pending Orders</p>
+            <p className="text-2xl font-bold text-orange-500">{metrics.pendingOrders}</p>
           </div>
-          <div className="mt-4 flex items-center">
-            <span className="text-sm text-gray-600">Due this week</span>
+          <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
+            <Clock className="w-5 h-5 text-orange-500" />
           </div>
-        </CardContent>
+        </div>
+        <div className="mt-3 text-sm text-gray-600">Due this week</div>
       </Card>
     </div>
   );

@@ -645,7 +645,7 @@ export function ForecastTable({ plant }: { plant: string }) {
       {/* Top Control Bar */}
       <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center">
         <div>
-          <h3 className="text-xl font-semibold text-gray-900">8-Week Stock Forecast</h3>
+          <h3 className="text-xl font-semibold text-gray-900">4-Week Stock Forecast</h3>
           <p className="text-sm text-gray-600 mt-1">
             Showing {filteredInventory.length} of {forecastData.length} items
           </p>
@@ -706,17 +706,24 @@ export function ForecastTable({ plant }: { plant: string }) {
             <tr>
               <th className="w-6"></th>
               <th className="px-4 py-2 text-left text-xs text-gray-500 uppercase">Item</th>
-              {weeks.map(week => (
-                <th
-                  key={week}
-                  className={
-                    "px-1 py-1 text-center text-xs text-gray-500 " +
-                    (week === 0 ? "font-bold text-gray-900" : "")
-                  }
-                >
-                  {week < 0 ? `W${week}` : week === 0 ? "Current" : `W+${week}`}
-                </th>
-              ))}
+                {weeks.map(week => {
+                  const monday = new Date(2024, 11, 23 + week * 7); // 11 = December (0-based)
+                  const label = monday.toLocaleDateString('en-GB', {
+                    day: 'numeric',
+                    month: 'short',
+                  }); // e.g., "25 Nov"
+                  return (
+                    <th
+                      key={week}
+                      className={
+                        "px-1 py-1 text-center text-xs text-gray-500 " +
+                        (week === 0 ? "font-bold text-gray-900" : "")
+                      }
+                    >
+                      {label}
+                    </th>
+                  );
+                })}
               <th className="px-3 py-2 text-right text-xs text-gray-500">Action</th>
             </tr>
           </thead>

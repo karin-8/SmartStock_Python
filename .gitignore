@@ -6,6 +6,8 @@ vite.config.ts.*
 <<<<<<< HEAD
 *.tar.gz
 backend/themallfull
+backend/themall_poc
+backend/.env
 =======
 *.tar.gz
 >>>>>>> b706f0d121b3b10e4a512f0da8a0587ce01b61a7
