@@ -11,11 +11,21 @@ from collections import defaultdict
 import httpx # Ensure httpx is imported
 from analytics import generate_analytics
 from llm import summarize_analytics
-
-
-# Assume: result = [{material, week, openingStock, closingStock, change}, ...]
-
 from collections import defaultdict
+from time import time
+import datetime as dt
+from datetime import datetime, timedelta
+
+forecast_cache = {
+    # plant: { "timestamp": float, "data": list[InventoryItemWithForecast] }
+}
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+historical_stock_cache = {
+    # plant: { "timestamp": float, "data": list }
+}
+HISTORICAL_CACHE_TTL = 300  # 5 minutes
+
 
 def patch_missing_weeks(result, weeks=(-4, -3, -2, -1)):
     # Build a dict of dicts: mat -> week -> data
@@ -203,8 +213,15 @@ order_list: List[OrderRequest] = []
 
 @app.get("/api/historical-stock")
 async def get_historical_stock(plant: str = Query("15KA")):
-    import datetime as dt
-    from datetime import datetime, timedelta
+    now = time()
+    if plant in historical_stock_cache:
+        cache_entry = historical_stock_cache[plant]
+        if now - cache_entry["timestamp"] < HISTORICAL_CACHE_TTL:
+            print(f"🧠 Using cached historical stock for plant: {plant}")
+            return cache_entry["data"]
+
+    print(f"🔄 Cache miss or expired for historical stock: {plant}. Recomputing...")
+    
     conn = await get_db_connection()
     try:
         anchor_date = datetime(2024, 12, 23)
@@ -375,6 +392,12 @@ async def get_historical_stock(plant: str = Query("15KA")):
 
         result = patch_missing_weeks(result)
         result = backfill_opening_stock(result, weeks=[-4, -3, -2, -1])
+        
+        # 🧠 Save to cache
+        historical_stock_cache[plant] = {
+            "timestamp": now,
+            "data": result
+        }
 
         return result
 
@@ -430,9 +453,15 @@ async def get_dashboard_metrics(plant: str = Query("15KA")) -> Dict:
 
 @app.get("/api/forecast", response_model=List[InventoryItemWithForecast])
 async def get_forecast(plant: str = Query("15KA")):
-    import datetime as dt
-    from datetime import datetime
-    import httpx # Import httpx for making HTTP requests
+    now = time()
+    # Return cached data if valid
+    if plant in forecast_cache:
+        cache_entry = forecast_cache[plant]
+        if now - cache_entry["timestamp"] < CACHE_TTL_SECONDS:
+            print(f"🧠 Using cached forecast for plant: {plant}")
+            return cache_entry["data"]
+
+    print(f"🔄 Cache miss or expired for plant: {plant}. Recomputing...")
 
     conn = await get_db_connection()
     try:
@@ -626,6 +655,10 @@ async def get_forecast(plant: str = Query("15KA")):
                 leadTimeDays=lead_time_days, # Pass lead_time_days here
                 stockStatus=stock_status_list,
             ))
+        forecast_cache[plant] = {
+            "timestamp": now,
+            "data": forecast_results
+        }
 
         return forecast_results
 

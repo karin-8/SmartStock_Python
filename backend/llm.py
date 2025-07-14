@@ -8,7 +8,7 @@ from datetime import datetime
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
-llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o", temperature=0.4)
+llm = ChatOpenAI(openai_api_key=api_key, model="gpt-4o-mini", temperature=0.4)
 
 def summarize_analytics(analytics: dict) -> str:
     start = datetime.now()

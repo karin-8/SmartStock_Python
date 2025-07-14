@@ -7,9 +7,11 @@ interface MetricsCardsProps {
   metrics?: DashboardMetrics;
   urgentCount: number;
   isLoading: boolean;
+  onFilterSelect?: (filters: string[]) => void;
 }
 
-export function MetricsCards({ metrics, isLoading }: MetricsCardsProps) {
+
+export function MetricsCards({ metrics, isLoading, onFilterSelect }: MetricsCardsProps) {
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -27,7 +29,10 @@ export function MetricsCards({ metrics, isLoading }: MetricsCardsProps) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Total SKUs */}
-      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+      <Card 
+        className="flex flex-col justify-between p-4 shadow-sm border border-gray-100 cursor-pointer transition hover:shadow-md hover:border-blue-300 hover:bg-blue-50"
+        onClick={() => onFilterSelect?.(["Okay", "Low", "Must-Order"])}
+      >
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm text-gray-500 font-medium">Total SKUs</p>
@@ -41,31 +46,37 @@ export function MetricsCards({ metrics, isLoading }: MetricsCardsProps) {
       </Card>
 
       {/* Low Stock SKUs */}
-      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+      <Card 
+        className="flex flex-col justify-between p-4 shadow-sm border border-gray-100 cursor-pointer transition hover:shadow-md hover:border-blue-300 hover:bg-blue-50"
+        onClick={() => onFilterSelect?.(["Low", "Must-Order"])}
+      >
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm text-gray-500 font-medium">Low Stock SKUs</p>
-            <p className="text-2xl font-bold text-red-600">{metrics.lowStockItems}</p>
+            <p className="text-2xl font-bold text-orange-600">{metrics.lowStockItems}</p>
           </div>
-          <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
-            <AlertTriangle className="w-5 h-5 text-red-600" />
+          <div className="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5 text-orange-600" />
           </div>
         </div>
-        <div className="mt-3 text-sm text-red-600">Action required</div>
+        <div className="mt-3 text-sm text-orange-600">Action required</div>
       </Card>
 
       {/* Must-Order SKUs */}
-      <Card className="flex flex-col justify-between p-4 shadow-sm border border-gray-100">
+      <Card 
+        className="flex flex-col justify-between p-4 shadow-sm border border-gray-100 cursor-pointer transition hover:shadow-md hover:border-blue-300 hover:bg-blue-50"
+        onClick={() => onFilterSelect?.(["Must-Order"])}
+      >
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm text-gray-500 font-medium">Must-Order SKUs</p>
-            <p className="text-2xl font-bold text-orange-600">{metrics.urgentItems}</p>
+            <p className="text-2xl font-bold text-red-600">{metrics.urgentItems}</p>
           </div>
-          <div className="w-10 h-10 bg-orange-100 rounded-lg flex items-center justify-center">
-            <Flame className="w-5 h-5 text-orange-600" />
+          <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+            <Flame className="w-5 h-5 text-red-600" />
           </div>
         </div>
-        <div className="mt-3 text-sm text-orange-600 font-medium">Immediate attention</div>
+        <div className="mt-3 text-sm text-red-600 font-medium">Immediate attention</div>
       </Card>
 
       {/* Pending Orders */}

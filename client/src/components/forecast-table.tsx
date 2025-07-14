@@ -44,6 +44,14 @@ type StockChartProps = {
   chartType?: "opening" | "change" | "remain";
 };
 
+interface ForecastTableProps {
+  plant: string;
+  inventory: InventoryItemWithForecast[];
+  isLoading: boolean;
+  selectedTags?: string[];
+}
+
+
 type Plant = { code: string; name: string };
 
 function getStatusBadge(status: "okay" | "low" | "critical") {
@@ -429,7 +437,11 @@ const MultiSelectFilter: React.FC<MultiSelectFilterProps> = ({
 };
 
 
-export function ForecastTable({ plant }: { plant: string }) {
+export function ForecastTable({
+  plant,
+  selectedTags,
+}: ForecastTableProps) {
+
   const [forecastData, setForecastData] = useState<InventoryItemWithForecast[]>([]);
   const [historicalData, setHistoricalData] = useState<HistoricalStockItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -449,6 +461,33 @@ export function ForecastTable({ plant }: { plant: string }) {
   const [allocationData, setAllocationData] = useState<Record<string, any>>({});
   const [loadingAllocation, setLoadingAllocation] = useState<Record<string, boolean>>({});
   const [plants, setPlants] = useState<Plant[]>([]);
+  const [internalSelectedTags, setInternalSelectedTags] = useState<string[]>(selectedTags ?? []);
+
+  useEffect(() => {
+    if (selectedTags) {
+      setInternalSelectedTags(selectedTags);
+    }
+  }, [selectedTags]);
+
+  useEffect(() => {
+    // Map incoming tags to your internal status keys
+    const statusMap: Record<string, string> = {
+      "Low": "low",
+      "Must-Order": "critical",
+      "Okay": "okay",
+    };
+
+    // If incoming tags include stock-related ones, update status filter accordingly
+    const mappedStatuses = internalSelectedTags
+      .map(tag => statusMap[tag])
+      .filter(Boolean);
+
+    if (mappedStatuses.length > 0) {
+      setStatusFilter(new Set(mappedStatuses));
+    }
+  }, [internalSelectedTags]);
+
+
 
   useEffect(() => {
     fetch("http://localhost:8000/api/plants")
@@ -456,6 +495,7 @@ export function ForecastTable({ plant }: { plant: string }) {
       .then(setPlants)
       .catch(() => setPlants([]));
   }, []);
+
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -551,10 +591,11 @@ export function ForecastTable({ plant }: { plant: string }) {
   }, [forecastData, categoryFilter, statusFilter, supplierFilter]);
 
   const clearFilters = () => {
-    setCategoryFilter(new Set());
-    setStatusFilter(new Set());
-    setSupplierFilter(new Set());
+    setCategoryFilter(new Set(categories));
+    setStatusFilter(new Set(statusOptions));
+    setSupplierFilter(new Set(suppliers));
   };
+
 
   const handleExport = () => exportInventorySummary(filteredInventory);
 

@@ -34,6 +34,7 @@ export default function Dashboard() {
   // NEW: plant options, selected plant
   const [plantOptions, setPlantOptions] = useState<PlantOption[]>([]); // Change type to PlantOption[]
   const [selectedPlant, setSelectedPlant] = useState("34KA");
+  const [forecastFilter, setForecastFilter] = useState<string[]>([]);
 
   // Fetch plant options on mount
   useEffect(() => {
@@ -166,7 +167,12 @@ return (
           <div className="flex flex-row flex-wrap sm:flex-nowrap gap-4 mb-6">
             <div className="w-full sm:w-1/2">
               {!inventoryLoading && (
-                <MetricsCards metrics={metrics} isLoading={metricsLoading} />
+                <MetricsCards
+                  metrics={metrics}
+                  isLoading={metricsLoading}
+                  urgentCount={metrics?.urgentItems ?? 0}
+                  onFilterSelect={setForecastFilter}
+                />
               )}
             </div>
             <div className="w-full sm:w-1/2">
@@ -178,7 +184,12 @@ return (
 
           {/* Forecast Table stays at bottom */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
-            <ForecastTable plant={selectedPlant} inventory={inventory} isLoading={inventoryLoading} />
+            <ForecastTable
+              plant={selectedPlant}
+              inventory={inventory}
+              isLoading={inventoryLoading}
+              selectedTags={forecastFilter}  // <-- Pass to ForecastTable
+            />
           </div>
       </div>
     </div>

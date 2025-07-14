@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import ReactMarkdown from "react-markdown";
 
@@ -55,14 +56,16 @@ function useTypingLoop(text: string, speed = 100, delay = 800) {
 }
 
 export default function AIInsights({ plant }: { plant: string }) {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const typing = useTypingLoop("กำลังวิเคราะห์...", 80, 800);
 
-  useEffect(() => {
+  const handleGenerate = () => {
     if (!plant) return;
     setLoading(true);
-    setExpanded(false);  // 💥 Reset state here
+    setExpanded(false);
+    setSummary(null);
 
     fetch(`http://localhost:8000/api/ai-insight?plant=${plant}`)
       .then((res) => res.json())
@@ -76,29 +79,32 @@ export default function AIInsights({ plant }: { plant: string }) {
         console.error("Failed to load AI Insight:", err);
         setLoading(false);
       });
-  }, [plant]);
-
-  const typing = useTypingLoop("กำลังวิเคราะห์...", 80, 800);
+  };
 
   return (
     <Card className="transition-all duration-200 hover:shadow-md hover:border-blue-400">
-      <CardHeader>
+      <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle>AI Summary</CardTitle>
+        <Button onClick={handleGenerate} disabled={loading || !plant}>
+          {loading ? "Analyzing..." : "Generate"}
+        </Button>
       </CardHeader>
       <CardContent>
         {loading ? (
           <p className="text-sm text-gray-500 italic">{typing}</p>
         ) : summary ? (
-        <div
-          className={`prose prose-sm max-w-none text-gray-800 transition-all duration-300 ease-in-out cursor-pointer ${
-            expanded ? "" : "line-clamp-4"
-          }`}
-          onClick={() => setExpanded(!expanded)}
-        >
-          <ReactMarkdown>{summary}</ReactMarkdown>
-        </div>
+          <div
+            className={`prose prose-sm max-w-none text-gray-800 transition-all duration-300 ease-in-out cursor-pointer ${
+              expanded ? "" : "line-clamp-4"
+            }`}
+            onClick={() => setExpanded(!expanded)}
+          >
+            <ReactMarkdown>{summary}</ReactMarkdown>
+          </div>
         ) : (
-          <p className="text-sm text-muted-foreground">No insight available.</p>
+          <p className="text-sm text-muted-foreground">
+            {plant ? "Click generate to view AI insight." : "Please select a plant first."}
+          </p>
         )}
       </CardContent>
     </Card>
