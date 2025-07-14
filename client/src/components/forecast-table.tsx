@@ -38,11 +38,27 @@ type HistoricalStockItem = {
 };
 
 type StockChartProps = {
-  data: Array<{ week: string; value: number }>;
+  data: Array<{ week: string; value: number; isForecast?: boolean }>;
   title: string;
   reorderPoint?: number;
   chartType?: "opening" | "change" | "remain";
+  isConnected?: boolean;
+  demandRange?: string;
+  setDemandRange?: (v: string) => void;
 };
+
+interface IntegratedStockChartProps {
+  title: string;
+  data: any[];
+  chartType: "opening" | "change" | "remain";
+  reorderPoint?: number;
+  safetyStock?: number;
+  isConnected?: boolean;
+  demandRange?: string;
+  setDemandRange?: (value: string) => void;
+}
+
+
 
 interface ForecastTableProps {
   plant: string;
@@ -69,56 +85,72 @@ function getStatusBadge(status: "okay" | "low" | "critical") {
   );
 }
 
-function IntegratedStockChart({
-  data,
+export default function IntegratedStockChart({
   title,
+  data,
+  chartType,
   reorderPoint,
-  chartType = "opening",
-  isConnected = false
-}: StockChartProps & { isConnected?: boolean }) {
+  isConnected,
+  demandRange,
+  setDemandRange,
+}: IntegratedStockChartProps) {
+
 
   // Calculate safety stock (10% of ROP, rounded up)
-  const safetyStock = reorderPoint ? Math.ceil(reorderPoint * 0.1) : undefined;
+  const safetyStock = (typeof reorderPoint === 'number' && reorderPoint >= 0) 
+  ? Math.ceil(reorderPoint * 0.1) 
+  : undefined;
 
   // Calculate Y-axis domain to ensure ROP is visible
   const yAxisDomain = useMemo(() => {
     const values = data.map(d => d.value);
-    const minValue = Math.min(...values);
-    const maxValue = Math.max(...values);
+    let domainMin = Math.min(...values);
+    let domainMax = Math.max(...values);
 
-    let domainMin = minValue;
-    let domainMax = maxValue;
+    const maybeInclude = (v?: number) => {
+      if (typeof v === "number") {
+        domainMin = Math.min(domainMin, v);
+        domainMax = Math.max(domainMax, v);
+      }
+    };
 
-    // If we have reorderPoint and it's for opening/remain charts, ensure it's visible
-    if (reorderPoint && (chartType === "opening" || chartType === "remain")) {
-      domainMin = Math.min(domainMin, reorderPoint);
-      domainMax = Math.max(domainMax, reorderPoint);
+    // Force ROP and Safety into the domain, always
+    maybeInclude(reorderPoint);
+    maybeInclude(safetyStock);
 
-      // Add some padding around the ROP
-      const padding = Math.max(10, (domainMax - domainMin) * 0.1);
-      domainMin = Math.max(0, domainMin - padding);
-      domainMax = domainMax + padding;
-    }
-
-    // If we have safety stock, ensure it's visible too
-    if (safetyStock && (chartType === "opening" || chartType === "remain")) {
-      domainMin = Math.min(domainMin, safetyStock);
-      domainMax = Math.max(domainMax, safetyStock);
-    }
+    const padding = Math.max(10, (domainMax - domainMin) * 0.1);
+    domainMin = Math.max(0, domainMin - padding);
+    domainMax = domainMax + padding;
 
     return [domainMin, domainMax];
+
   }, [data, reorderPoint, safetyStock, chartType]);
 
   // Find the index of "Current" to determine forecast area
   const currentIndex = data.findIndex(d => d.week === 'Current');
-  const forecastStartIndex = currentIndex >= 0 ? currentIndex : data.findIndex(d => d.week.includes('W+'));
+  const forecastStartIndex =
+    data.findIndex(d => d.week === 'Current') >= 0
+      ? data.findIndex(d => d.week === 'Current')
+      : data.findIndex(d => d.week.startsWith('W+'));
   const lastIndex = data.length - 1;
+
+  // Later inside <LineChart>
+  {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
+    <ReferenceArea
+      x1={data[forecastStartIndex].week}
+      x2={data[lastIndex].week}
+      fill="#FFFFCC"
+      fillOpacity={0.6}
+      stroke="none"
+    />
+  )}
+
 
   // Custom tooltip for better annotations
   const CustomTooltip = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
       const value = payload[0].value;
-      const isHistorical = label.includes('W-');
+      const isHistorical = typeof label === "string" && label.includes('W-');
       const isCurrentWeek = label === 'Current';
 
       return (
@@ -182,7 +214,7 @@ function IntegratedStockChart({
         <div className="flex items-center">
           {isConnected && <div className="w-2 h-2 bg-blue-400 rounded-full mr-2"></div>}
           {title}
-          {reorderPoint && safetyStock && (
+          {(typeof reorderPoint === 'number') && (typeof safetyStock === 'number') && (
             <span className="ml-2 text-xs text-gray-600">
               (ROP={reorderPoint}, Safety={safetyStock})
             </span>
@@ -194,136 +226,165 @@ function IntegratedStockChart({
           </span>
         )}
       </h4>
-      <ResponsiveContainer width="100%" height={180}>
-        <LineChart data={data} margin={{ top: 25, right: 30, left: 20, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-          <XAxis
-            dataKey="week"
-            tick={{ fontSize: 11 }}
-            tickLine={{ stroke: '#9ca3af' }}
-          />
-          <YAxis
-            tick={{ fontSize: 11 }}
-            tickLine={{ stroke: '#9ca3af' }}
-            domain={yAxisDomain}
-          />
-          <Tooltip content={<CustomTooltip />} />
 
-          {/* Yellow shading for forecast area */}
-          {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
-            <ReferenceArea
-              x1={data[forecastStartIndex].week}
-              x2={data[lastIndex].week}
-              fill="#FFFFCC"
-              fillOpacity={0.6}
-              stroke="none"
-            />
-          )}
+      <div className="relative">
+        {chartType === "change" && demandRange && setDemandRange && (
+          <div className="absolute -top-4 right-0 z-10">
+            <Select onValueChange={setDemandRange} defaultValue={demandRange}>
+              <SelectTrigger className="text-xs w-[110px] border-gray-300 bg-white shadow-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="1m">1 Month</SelectItem>
+                <SelectItem value="6m">6 Months</SelectItem>
+                <SelectItem value="12m">12 Months</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke={lineColor}
-            // Use dynamic lineColor
-            strokeWidth={isConnected ? 3 : 2}
-            dot={{ fill: lineColor, r: 4 }}
-            activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
-          >
-            {/* Add value labels on all data points */}
-            <LabelList
-              dataKey="value"
-              position="top"
-              style={{ fontSize: '10px', fill: '#374151', fontWeight: 'bold' }}
-              formatter={formatDataLabel}
-            />
-          </Line>
-
-          {/* Reorder Point Reference Line */}
-          {reorderPoint && (
-            <ReferenceLine
-              y={reorderPoint}
-              stroke="#ef4444"
-              strokeDasharray="5 5"
-              strokeWidth={2}
-            >
-              <Label
-                value={`ROP=${reorderPoint}`}
-                position="insideRight"
-                offset={10}
-                dy={-12}
-                style={{
-                  fontSize: '11px',
-                  fill: '#dc2626',
-                  fontWeight: 'bold',
-                  backgroundColor: 'rgba(255,255,255,0.8)',
-                  padding: '2px 4px',
-                  borderRadius: '2px',
-                }}
-              />
-            </ReferenceLine>
-          )}
-
-          {/* Safety Stock Reference Line */}
-          {safetyStock !== undefined && (chartType === "opening" || chartType === "remain") && (
-            <ReferenceLine
-              y={safetyStock}
-              stroke=" #f59e0b"
-              strokeDasharray="3 3"
-              strokeWidth={2}
-            >
-              <Label
-                value={`SAFETY=${safetyStock}`}
-                position="insideRight"
-                offset={10}
-                dy={12}
-                style={{
-                  fontSize: '11px',
-                  fill: '#d97706',
-                  fontWeight: 'bold',
-                  backgroundColor: 'rgba(255,255,255,0.8)',
-                  padding: '2px 4px',
-                  borderRadius: '2px',
-                }}
-              />
-            </ReferenceLine>
-          )}
-
-          {/* Add vertical line to separate historical from forecast */}
-          <ReferenceLine
-            x="Current"
-            stroke="#f59e0b"
-            strokeDasharray="2 2"
-            strokeWidth={1}
-            label={{
-              value: "Now",
-              position: "top",
-              style: { fontSize: '10px', fill: '#f59e0b' }
-            }}
-          />
-
-          {/* Add "Forecast" label in the middle of the shaded area */}
-          {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
-            <ReferenceLine
-              x={data[Math.floor((forecastStartIndex + lastIndex) / 2)].week}
-              stroke="none"
-              label={{
-                value: "Forecast",
-                position: "center",
-                offset: 10,
-                style: {
-                  fontSize: '12px',
-                  fill: 'rgba(40, 36, 36)',
-                  fontWeight: 'bold',
-                  backgroundColor: 'rgba(255,255,255,0.8)',
-                  padding: '2px 6px',
-                  borderRadius: '3px',
-                  border: '1px rgba(40, 36, 36)'
-                }
+        <ResponsiveContainer width="100%" height={180}>
+          <LineChart data={data} margin={{ top: 25, right: 30, left: 20, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis
+              dataKey="week"
+              tick={{ fontSize: 11 }}
+              tickLine={{ stroke: '#9ca3af' }}
+              tickFormatter={(tick) => {
+                const anchorDate = new Date("2024-10-21");
+                const rel = parseInt(tick.replace("W+", "").replace("W", "").replace("Current", "0"));
+                if (isNaN(rel)) return tick;
+                const targetDate = new Date(anchorDate);
+                targetDate.setDate(anchorDate.getDate() + rel * 7);
+                return targetDate.toLocaleDateString("en-GB", {
+                  day: "numeric",
+                  month: "short"
+                }); // e.g., "30 Dec"
               }}
             />
-          )}
-        </LineChart>
-      </ResponsiveContainer>
+            <YAxis
+              tick={{ fontSize: 11 }}
+              tickLine={{ stroke: '#9ca3af' }}
+              domain={yAxisDomain}
+            />
+            <Tooltip content={<CustomTooltip />} />
+
+            {/* Yellow shading for forecast area */}
+            {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
+              <ReferenceArea
+                x1={data[forecastStartIndex].week}
+                x2={data[lastIndex].week}
+                fill="#FFFFCC"
+                fillOpacity={0.6}
+                stroke="none"
+              />
+            )}
+
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke={lineColor}
+              // Use dynamic lineColor
+              strokeWidth={isConnected ? 3 : 2}
+              dot={{ fill: lineColor, r: 4 }}
+              activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
+            >
+              {/* Add value labels on all data points */}
+              <LabelList
+                dataKey="value"
+                position="top"
+                style={{ fontSize: '10px', fill: '#374151', fontWeight: 'bold' }}
+                formatter={formatDataLabel}
+              />
+            </Line>
+
+            {/* Reorder Point Reference Line */}
+            {reorderPoint && (
+              <ReferenceLine
+                y={reorderPoint}
+                stroke="#ef4444"
+                strokeDasharray="5 5"
+                strokeWidth={2}
+              >
+                <Label
+                  value={`ROP=${reorderPoint}`}
+                  position="insideRight"
+                  offset={10}
+                  dy={-12}
+                  style={{
+                    fontSize: '11px',
+                    fill: '#dc2626',
+                    fontWeight: 'bold',
+                    backgroundColor: 'rgba(255,255,255,0.8)',
+                    padding: '2px 4px',
+                    borderRadius: '2px',
+                  }}
+                />
+              </ReferenceLine>
+            )}
+
+            {/* Safety Stock Reference Line */}
+            {safetyStock !== undefined && (chartType === "opening" || chartType === "remain") && (
+              <ReferenceLine
+                y={safetyStock}
+                stroke=" #f59e0b"
+                strokeDasharray="3 3"
+                strokeWidth={2}
+              >
+                <Label
+                  value={`SAFETY=${safetyStock}`}
+                  position="insideRight"
+                  offset={10}
+                  dy={12}
+                  style={{
+                    fontSize: '11px',
+                    fill: '#d97706',
+                    fontWeight: 'bold',
+                    backgroundColor: 'rgba(255,255,255,0.8)',
+                    padding: '2px 4px',
+                    borderRadius: '2px',
+                  }}
+                />
+              </ReferenceLine>
+            )}
+
+            {/* Add vertical line to separate historical from forecast */}
+            <ReferenceLine
+              x="Current"
+              stroke="#f59e0b"
+              strokeDasharray="2 2"
+              strokeWidth={1}
+              label={{
+                value: "Now",
+                position: "top",
+                style: { fontSize: '10px', fill: '#f59e0b' }
+              }}
+            />
+
+            {/* Add "Forecast" label in the middle of the shaded area */}
+            {forecastStartIndex >= 0 && forecastStartIndex < lastIndex && (
+              <ReferenceLine
+                x={data[Math.floor((forecastStartIndex + lastIndex) / 2)].week}
+                stroke="none"
+                label={{
+                  value: "Forecast",
+                  position: "center",
+                  offset: 10,
+                  style: {
+                    fontSize: '12px',
+                    fill: 'rgba(40, 36, 36)',
+                    fontWeight: 'bold',
+                    backgroundColor: 'rgba(255,255,255,0.8)',
+                    padding: '2px 6px',
+                    borderRadius: '3px',
+                    border: '1px rgba(40, 36, 36)'
+                  }
+                }}
+              />
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
     </div>
   );
 }
@@ -458,10 +519,15 @@ export function ForecastTable({
     remain: boolean;
     allocation?: boolean;
   }>>({});
+  const [demandChartData, setDemandChartData] = useState<Record<string, any[]>>({});
+  const [loadingCharts, setLoadingCharts] = useState<Record<string, boolean>>({});
+
   const [allocationData, setAllocationData] = useState<Record<string, any>>({});
   const [loadingAllocation, setLoadingAllocation] = useState<Record<string, boolean>>({});
   const [plants, setPlants] = useState<Plant[]>([]);
   const [internalSelectedTags, setInternalSelectedTags] = useState<string[]>(selectedTags ?? []);
+  const [demandRange, setDemandRange] = useState("12m");  // <-- ✅ ADD THIS HERE
+
 
   useEffect(() => {
     if (selectedTags) {
@@ -558,6 +624,48 @@ export function ForecastTable({
     }
     fetchData();
   }, [plant]);
+
+  useEffect(() => {
+  Object.entries(expandedCharts).forEach(([id, charts]) => {
+    const item = forecastData.find(i => i.id === Number(id));
+    if (!item) return;
+
+    const key = `${item.sku}-${demandRange}`;
+    const demandRangeWeeksMap = {
+      "1m": 4,
+      "6m": 24,
+      "12m": 52
+    };
+
+    if (charts.change && !demandChartData[key] && !loadingCharts[key]) {
+      setLoadingCharts(prev => ({ ...prev, [key]: true }));
+
+      fetch(`http://localhost:8000/api/demand-chart?sku=${item.sku}&plant=${plant}&timerange=${demandRangeWeeksMap[demandRange]}`)
+        .then(res => res.json())
+        .then(data => {
+          const anchorDate = new Date("2024-10-21");
+          const transformed = data.map((d: any) => {
+            const currentDate = new Date(d.weekStartDate);
+            const relWeeks = Math.round((currentDate.getTime() - anchorDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+            return {
+              week: relWeeks < 0 ? `W${relWeeks}` : relWeeks === 0 ? "Current" : `W+${relWeeks}`,
+              value: d.moveOut ?? d.forecastedDemand ?? 0,
+              isForecast: d.forecasted === true
+            };
+          });
+
+          setDemandChartData(prev => ({ ...prev, [key]: transformed }));
+        })
+        .catch(() => {
+          setDemandChartData(prev => ({ ...prev, [key]: [] }));
+        })
+        .finally(() => {
+          setLoadingCharts(prev => ({ ...prev, [key]: false }));
+        });
+    }
+  });
+}, [expandedCharts, demandRange, forecastData, plant]);
+
 
   const categories = useMemo(() => [...new Set(forecastData.map(i => i.category))], [forecastData]);
   const suppliers = useMemo(() => [...new Set(forecastData.map(i => i.supplier))], [forecastData]);
@@ -694,6 +802,7 @@ export function ForecastTable({
       </div>
     );
   }
+  
 
 
   return (
@@ -752,6 +861,16 @@ export function ForecastTable({
           <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="w-4 h-4 mr-1" /> Export
           </Button>
+          {/* <Select onValueChange={(v) => setDemandRange(v as any)} defaultValue="1m">
+            <SelectTrigger className="w-[120px] text-sm">
+              <SelectValue placeholder="Range" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1m">1 Month</SelectItem>
+              <SelectItem value="6m">6 Months</SelectItem>
+              <SelectItem value="12m">12 Months</SelectItem>
+            </SelectContent>
+          </Select> */}
         </div>
       </div>
 
@@ -763,7 +882,7 @@ export function ForecastTable({
               <th className="w-6"></th>
               <th className="px-4 py-2 text-left text-xs text-gray-500 uppercase">Item</th>
                 {weeks.map(week => {
-                  const monday = new Date(2024, 11, 23 + week * 7); // 11 = December (0-based)
+                  const monday = new Date(2024, 9, 21 + week * 7); // 11 = December (0-based)
                   const label = monday.toLocaleDateString('en-GB', {
                     day: 'numeric',
                     month: 'short',
@@ -784,7 +903,7 @@ export function ForecastTable({
             </tr>
           </thead>
           <tbody className="bg-white">
-            {currentItems.map(item => { {/* Use currentItems for rendering */}
+            {currentItems.map(item => { 
               const currentStatus = item.stockStatus.find(s => s.week === 0)?.status;
               const isExpanded = expandedRows.has(item.id);
 
@@ -996,6 +1115,11 @@ export function ForecastTable({
                             {/* Charts displayed side by side */}
                             {(() => {
                               const activeCharts = [];
+                              const demandRangeWeeksMap = {
+                                "1m": 4,
+                                "6m": 24,
+                                "12m": 52
+                              };
                               if (expandedCharts[item.id]?.opening) {
                                 activeCharts.push(
                                   <IntegratedStockChart
@@ -1009,13 +1133,44 @@ export function ForecastTable({
                                 );
                               }
                               if (expandedCharts[item.id]?.change) {
+                                const key = `${item.sku}-${demandRange}`;
+                                if (!demandChartData[key] && !loadingCharts[key]) {
+                                  setLoadingCharts(prev => ({ ...prev, [key]: true }));
+
+                                  fetch(`http://localhost:8000/api/demand-chart?sku=${item.sku}&plant=${plant}&timerange=${demandRangeWeeksMap[demandRange]}`)
+                                    .then(res => res.json())
+                                    .then(data => {
+                                      const anchorDate = new Date("2024-10-21");
+                                      const transformed = data.map((d: any) => {
+                                        const currentDate = new Date(d.weekStartDate);
+                                        const relWeeks = Math.round((currentDate.getTime() - anchorDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+                                        return {
+                                          week: relWeeks < 0 ? `W${relWeeks}` : relWeeks === 0 ? "Current" : `W+${relWeeks}`,
+                                          value: d.moveOut ?? d.forecastedDemand ?? 0,
+                                          isForecast: d.forecasted === true
+                                        };
+                                      });
+
+                                      // ✅ Now this is *inside* the .then
+                                      setDemandChartData(prev => ({ ...prev, [key]: transformed }));
+                                    })
+                                    .catch(() => {
+                                      setDemandChartData(prev => ({ ...prev, [key]: [] }));
+                                    })
+                                    .finally(() => {
+                                      setLoadingCharts(prev => ({ ...prev, [key]: false }));
+                                    });
+                                }
+
                                 activeCharts.push(
                                   <IntegratedStockChart
-                                    key="change"
-                                    title="Demand (Actual/Forecast)"
-                                    data={getChartData(item, "change")}
+                                    key={`change-${demandRange}`}
+                                    title={`Demand (${demandRange})`}
+                                    data={demandChartData[key] || []}
                                     chartType="change"
                                     isConnected={true}
+                                    demandRange={demandRange}
+                                    setDemandRange={setDemandRange}
                                   />
                                 );
                               }

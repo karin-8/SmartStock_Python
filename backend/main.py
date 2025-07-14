@@ -224,7 +224,7 @@ async def get_historical_stock(plant: str = Query("15KA")):
     
     conn = await get_db_connection()
     try:
-        anchor_date = datetime(2024, 12, 23)
+        anchor_date = datetime(2024, 10, 21)
         week_ranges = []
         for rel_week in range(-4, 0):
             start = (anchor_date - timedelta(days=anchor_date.weekday())) + timedelta(weeks=rel_week)
@@ -468,24 +468,23 @@ async def get_forecast(plant: str = Query("15KA")):
         # --- Week mapping (-4 to +8) ---
         week_map_query = """
             WITH week_series AS (
-                SELECT generate_series(-4, 8) AS relative_week
+            SELECT generate_series(-4, 8) AS relative_week
             ),
             target_weeks AS (
-                SELECT
-                    (DATE '2024-12-23' - (8 - relative_week) * INTERVAL '1 week') AS target_date,
-                    relative_week
-                FROM week_series
+            SELECT
+                (DATE '2024-10-21' + relative_week * INTERVAL '1 week') AS target_date,
+                relative_week
+            FROM week_series
             )
             SELECT
-                relative_week,
-                EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
-                EXTRACT('week' FROM target_date)::INT AS iso_week
+            relative_week,
+            EXTRACT('isoyear' FROM target_date)::INT AS iso_year,
+            EXTRACT('week' FROM target_date)::INT AS iso_week
             FROM target_weeks
             ORDER BY relative_week;
         """
         week_rows = await conn.fetch(week_map_query)
         week_map = {row["relative_week"]: (row["iso_year"], row["iso_week"]) for row in week_rows}
-        w_minus_1_year, w_minus_1_week = week_map[-1]
 
         # --- Get SKUs & metadata ---
         if plant in ['91KA', '92KA']:
@@ -555,7 +554,6 @@ async def get_forecast(plant: str = Query("15KA")):
                 # For psycopg2/asyncpg, passing a list directly to IN works, but it's good practice
                 # to explicitly cast it if needed, or rely on the driver's parameter handling.
                 # Here, we'll pass it as a parameter, assuming the driver handles list-to-array conversion.
-                
                 demand_query = """
                     SELECT material, iso_year, iso_week, SUM(pred_order_qty) AS pred_order_qty
                     FROM themall_poc.final_order_table
@@ -566,6 +564,7 @@ async def get_forecast(plant: str = Query("15KA")):
                 demand_rows = await conn.fetch(demand_query, year_list, week_list, skus_for_plant)
                 # print(demand_rows, "demand rows fetched")
         else:
+            print(year_list, week_list)
             demand_query = """
                 SELECT material, iso_year, iso_week, pred_order_qty
                 FROM themall_poc.final_order_table
@@ -783,7 +782,7 @@ async def allocate_sku_demand(
             ),
             target_weeks AS (
                 SELECT
-                    (DATE '2024-12-23' + relative_week * INTERVAL '1 week') AS target_date,
+                    (DATE '2024-10-21' + relative_week * INTERVAL '1 week') AS target_date,
                     relative_week
                 FROM week_series
             )
@@ -847,7 +846,7 @@ async def test_allocate():
             ),
             target_weeks AS (
                 SELECT
-                    (DATE '2024-12-23' + relative_week * INTERVAL '1 week') AS target_date,
+                    (DATE '2024-10-21' + relative_week * INTERVAL '1 week') AS target_date,
                     relative_week
                 FROM week_series
             )
@@ -910,3 +909,117 @@ async def ai_insight(plant: str = Query("15KA")):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# from datetime import date
+
+def generate_forecast_weeks(anchor_date_str: str, weeks_ahead: int = 8):
+    """
+    Generate (rel_week, week_start_date) tuples for W0 to W+weeks_ahead.
+    W0 = anchor_date
+    """
+    anchor_date = datetime.strptime(anchor_date_str, "%Y-%m-%d")
+    return [
+        (rel_week, (anchor_date + timedelta(weeks=rel_week)).date())
+        for rel_week in range(weeks_ahead + 1)
+    ]
+
+
+def iso_to_monday(year: int, week: int):
+    """
+    Convert ISO year and week to a Monday date.
+    """
+    return datetime.fromisocalendar(year, week, 1).date()
+
+
+
+@app.get("/api/demand-chart")
+async def get_demand_chart(
+    sku: str = Query(...),
+    plant: str = Query(...),
+    timerange: int = Query(12, ge=1, le=52),
+    include_forecast: bool = Query(True)
+):
+    anchor_date = datetime(2024, 10, 21)
+    result = []
+
+    # 🟡 Always include forecast if requested
+    if include_forecast:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                forecast_response = await client.get(f"http://localhost:8000/api/forecast?plant={plant}")
+                forecast_response.raise_for_status()
+                forecast_data = forecast_response.json()
+
+            for item in forecast_data:
+                if item["sku"].strip() == sku.strip():
+                    forecast_weeks = generate_forecast_weeks("2024-10-21")  # ⏱️ Predefined helper
+                    for rel_week, week_start in forecast_weeks:
+                        if rel_week <=4:
+                            status = next((s for s in item["stockStatus"] if s["week"] == rel_week), None)
+                            if status:
+                                result.append({
+                                    "isoYear": week_start.isocalendar()[0],
+                                    "isoWeek": week_start.isocalendar()[1],
+                                    "weekStartDate": str(week_start),
+                                    "moveOut": status["forecastedDemand"],
+                                    "forecasted": True
+                                })
+                    break  # ⛔ Stop after finding matching SKU
+
+        except httpx.HTTPStatusError as e:
+            print(f"Forecast fetch error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            print(f"Unexpected error fetching forecast: {e}")
+
+    # 🟢 Add historical if timerange > 0
+    if timerange > 0:
+        conn = await get_db_connection()
+        try:
+            start_date = anchor_date - timedelta(weeks=timerange)
+            end_date = anchor_date - timedelta(weeks=1)
+            start_str, end_str = start_date.date(), end_date.date()
+
+            query = """
+            WITH raw_mb51 AS (
+                SELECT
+                    material,
+                    plant,
+                    TO_DATE(posting_date, 'YYYY-MM-DD') AS date,
+                    EXTRACT(isoyear FROM TO_DATE(posting_date, 'YYYY-MM-DD')) AS iso_year,
+                    EXTRACT(week FROM TO_DATE(posting_date, 'YYYY-MM-DD')) AS iso_week,
+                    unit_entry_qty::numeric AS unit_entry_qty
+                FROM themall_poc.f_mb51_top50
+                WHERE plant = $1
+                  AND TRIM(material) = $2
+                  AND TO_DATE(posting_date, 'YYYY-MM-DD') BETWEEN $3 AND $4
+            )
+            SELECT
+                iso_year,
+                iso_week,
+                SUM(CASE WHEN unit_entry_qty < 0 THEN ABS(unit_entry_qty) ELSE 0 END) AS move_out
+            FROM raw_mb51
+            GROUP BY iso_year, iso_week
+            ORDER BY iso_year, iso_week;
+            """
+
+            rows = await conn.fetch(query, plant, sku.strip(), start_str, end_str)
+
+            historical = [
+                {
+                    "isoYear": int(row["iso_year"]),
+                    "isoWeek": int(row["iso_week"]),
+                    "moveOut": int(float(row["move_out"] or 0)),
+                    "weekStartDate": str(iso_to_monday(int(row["iso_year"]), int(row["iso_week"]))),
+                }
+                for row in rows
+            ]
+
+            result = historical + result  # 🧩 Combine historical first, forecast after
+
+        except Exception as e:
+            print(f"Demand Chart API error: {e}")
+            raise HTTPException(status_code=500, detail="Error fetching historical demand data")
+        finally:
+            await conn.close()
+
+    return result

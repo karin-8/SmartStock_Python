@@ -10,7 +10,7 @@ import AIInsights from "@/components/ai-insights"; // ✅ CORRECT
 import { getMetrics, getForecast } from "@/lib/api";
 import { Link } from "wouter";
 
-const referenceDate = new Date('2024-12-23');  // Start date of ISO Week 52, 2024
+const referenceDate = new Date('2024-10-21');  // Start date of ISO Week 52, 2024
 const now = new Date();
 
 const formattedDate = referenceDate.toLocaleDateString(undefined, {
