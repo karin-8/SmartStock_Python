@@ -513,13 +513,19 @@ async def get_forecast(plant: str = Query("15KA")):
         sku_list = [{"sku": sku, "item_desc": desc} for sku, desc in unique_skus.items()]
         print(len(sku_list), "unique SKUs found")
 
-
-        stock_query = """
-            SELECT sku, reorder_point, category, supplier, lead_time_days
-            FROM themall_poc.app_inventory_items_cal
-        """             # WHERE plant = $1
-        # stock_rows = await conn.fetch(stock_query, plant)
-        stock_rows = await conn.fetch(stock_query)
+        if plant in ['91KA', '92KA']:
+            stock_query = """
+                SELECT sku, reorder_point, category, supplier, lead_time_days
+                FROM themall_poc.app_inventory_items_cal
+            """             # WHERE plant = $1
+            stock_rows = await conn.fetch(stock_query)
+        else:
+            stock_query = """
+                SELECT sku, reorder_point, category, supplier, lead_time_days
+                FROM themall_poc.app_inventory_items_cal
+                WHERE plant = $1"""
+            stock_rows = await conn.fetch(stock_query, plant)
+        
         stock_map = {
             row["sku"].strip(): {
                 "reorder_point": row["reorder_point"]*11 if plant in ['91KA', '92KA'] else row["reorder_point"],

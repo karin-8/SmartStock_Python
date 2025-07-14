@@ -496,6 +496,21 @@ export function ForecastTable({
       .catch(() => setPlants([]));
   }, []);
 
+  useEffect(() => {
+    // Clear allocation data and collapse charts when plant changes
+    setAllocationData({});
+    setExpandedCharts(prev => {
+      const newExpanded = { ...prev };
+      Object.keys(newExpanded).forEach(id => {
+        newExpanded[id] = {
+          ...newExpanded[id],
+          allocation: false,
+        };
+      });
+      return newExpanded;
+    });
+  }, [plant]);
+
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
